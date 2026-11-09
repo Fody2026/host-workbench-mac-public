@@ -1,0 +1,42 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            arch: x64
+          - os: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 mutagen python-docx cryptography pyinstaller
+      - name: Build .app
+        run: |
+          pyinstaller --noconfirm --windowed --name "主持人工作台" \
+            --add-data "assets:assets" \
+            --collect-submodules mutagen \
+            --collect-submodules docx \
+            --collect-submodules cryptography \
+            app.py
+      - name: Zip .app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist/主持人工作台.app" "主持人工作台-macOS-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 主持人工作台-macOS-${{ matrix.arch }}
+          path: 主持人工作台-macOS-${{ matrix.arch }}.zip

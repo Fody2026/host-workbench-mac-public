@@ -1,0 +1,32 @@
+[
+ {
+  "id": "hall1",
+  "file": "hall1.jpg",
+  "name": "香槟金·剧院长厅"
+ },
+ {
+  "id": "hall2",
+  "file": "hall2.jpg",
+  "name": "穹顶·圆桌厅"
+ },
+ {
+  "id": "hall3",
+  "file": "hall3.jpg",
+  "name": "香槟金·花艺长厅"
+ },
+ {
+  "id": "hall4",
+  "file": "hall4.jpg",
+  "name": "香槟金·花艺剧院"
+ },
+ {
+  "id": "hall5",
+  "file": "hall5.jpg",
+  "name": "香槟金·宴会大厅"
+ },
+ {
+  "id": "hall6",
+  "file": "hall6.jpg",
+  "name": "香槟金·圆桌长厅"
+ }
+]

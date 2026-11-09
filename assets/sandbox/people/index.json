@@ -1,0 +1,173 @@
+[
+ {
+  "id": "p01",
+  "file": "p01.png",
+  "name": "主持人·持麦",
+  "role": "司仪",
+  "kind": "person",
+  "w": 300,
+  "h": 720
+ },
+ {
+  "id": "p02",
+  "file": "p02.png",
+  "name": "伴娘·礼服",
+  "role": "伴娘",
+  "kind": "person",
+  "w": 252,
+  "h": 565
+ },
+ {
+  "id": "p03",
+  "file": "p03.png",
+  "name": "伴郎·西装",
+  "role": "伴郎",
+  "kind": "person",
+  "w": 265,
+  "h": 720
+ },
+ {
+  "id": "p04",
+  "file": "p04.png",
+  "name": "奶奶·旗袍",
+  "role": "长辈",
+  "kind": "person",
+  "w": 274,
+  "h": 720
+ },
+ {
+  "id": "p05",
+  "file": "p05.png",
+  "name": "妈妈·红裙",
+  "role": "父母",
+  "kind": "person",
+  "w": 197,
+  "h": 720
+ },
+ {
+  "id": "p06",
+  "file": "p06.png",
+  "name": "宠物小狗",
+  "role": "宠物",
+  "kind": "person",
+  "w": 511,
+  "h": 720
+ },
+ {
+  "id": "p07",
+  "file": "p07.png",
+  "name": "宠物小猫",
+  "role": "宠物",
+  "kind": "person",
+  "w": 522,
+  "h": 720
+ },
+ {
+  "id": "p08",
+  "file": "p08.png",
+  "name": "小狗花童",
+  "role": "花童",
+  "kind": "person",
+  "w": 603,
+  "h": 720
+ },
+ {
+  "id": "p09",
+  "file": "p09.png",
+  "name": "小猫花童",
+  "role": "花童",
+  "kind": "person",
+  "w": 635,
+  "h": 720
+ },
+ {
+  "id": "p10",
+  "file": "p10.png",
+  "name": "摄影摄像",
+  "role": "摄影",
+  "kind": "person",
+  "w": 297,
+  "h": 720
+ },
+ {
+  "id": "p11",
+  "file": "p11.png",
+  "name": "新娘·白纱",
+  "role": "新娘",
+  "kind": "person",
+  "w": 470,
+  "h": 720
+ },
+ {
+  "id": "p12",
+  "file": "p12.png",
+  "name": "新郎·西装",
+  "role": "新郎",
+  "kind": "person",
+  "w": 241,
+  "h": 720
+ },
+ {
+  "id": "p13",
+  "file": "p13.png",
+  "name": "新人·双人",
+  "role": "新人组",
+  "kind": "person",
+  "w": 506,
+  "h": 720
+ },
+ {
+  "id": "p14",
+  "file": "p14.png",
+  "name": "爷爷·唐装",
+  "role": "长辈",
+  "kind": "person",
+  "w": 362,
+  "h": 720
+ },
+ {
+  "id": "p15",
+  "file": "p15.png",
+  "name": "爷爷奶奶·双人",
+  "role": "长辈组",
+  "kind": "person",
+  "w": 480,
+  "h": 720
+ },
+ {
+  "id": "p16",
+  "file": "p16.png",
+  "name": "爸爸·西装",
+  "role": "父母",
+  "kind": "person",
+  "w": 261,
+  "h": 720
+ },
+ {
+  "id": "p17",
+  "file": "p17.png",
+  "name": "爸爸妈妈·双人",
+  "role": "父母组",
+  "kind": "person",
+  "w": 395,
+  "h": 720
+ },
+ {
+  "id": "p18",
+  "file": "p18.png",
+  "name": "花童·公主裙",
+  "role": "花童",
+  "kind": "person",
+  "w": 427,
+  "h": 720
+ },
+ {
+  "id": "p19",
+  "file": "p19.png",
+  "name": "跟妆师",
+  "role": "跟妆",
+  "kind": "person",
+  "w": 318,
+  "h": 720
+ }
+]
