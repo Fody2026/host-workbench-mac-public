@@ -1,0 +1,22 @@
+workflows:
+  macos-build:
+    name: 主持人工作台 macOS
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      python: 3.11
+    scripts:
+      - name: Install dependencies
+        script: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install PySide6 mutagen python-docx cryptography pyinstaller
+      - name: Build .app
+        script: |
+          python3 -m PyInstaller --noconfirm --windowed --name "主持人工作台" \
+            --add-data "assets:assets" \
+            --collect-submodules mutagen \
+            --collect-submodules docx \
+            --collect-submodules cryptography \
+            app.py
+    artifacts:
+      - dist/*.app
