@@ -8,7 +8,7 @@ import json
 import logging
 
 from PySide6.QtCore import Qt, QTimer, QDate, QSize, QPoint, Signal, QRect, QRectF, QVariantAnimation, QEvent
-from PySide6.QtGui import QIcon, QFont, QColor, QPainter, QPen, QBrush, QPixmap, QAction
+from PySide6.QtGui import QIcon, QFont, QColor, QPainter, QPen, QBrush, QPixmap, QAction, QPalette
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QStyledItemDelegate, QStyleOptionViewItem, QStyle, QStackedWidget, QFrame,
@@ -1080,12 +1080,39 @@ class MainWindow(QMainWindow):
             self.settings.load_values()
 
     def apply_theme(self, name):
-        """保存设置后立即换肤，无需重启"""
+        """选择/保存后立即换肤；同时强制刷新 macOS 下的原生控件与窗口"""
         global WINDOW_QSS
         WINDOW_QSS = theme.build_qss(BASE_QSS, name)
-        self.setStyleSheet(WINDOW_QSS)
         t = theme.THEMES.get(name, theme.THEMES["暗夜金"])
+        logger.info("切换主题: %s", name)
+
+        app = QApplication.instance()
+        if app is not None:
+            # 只在 MainWindow 上设置样式时，macOS 的部分原生子控件/对话框不会跟着换色；
+            # 这里同时设到 QApplication，并同步 palette 兜底。
+            app.setStyleSheet(WINDOW_QSS)
+            try:
+                pal = QPalette()
+                pal.setColor(QPalette.Window, QColor(t["bg"]))
+                pal.setColor(QPalette.WindowText, QColor(t["text"]))
+                pal.setColor(QPalette.Base, QColor(t["input"]))
+                pal.setColor(QPalette.AlternateBase, QColor(t["card_alt"]))
+                pal.setColor(QPalette.Text, QColor(t["text"]))
+                pal.setColor(QPalette.Button, QColor(t["btn"]))
+                pal.setColor(QPalette.ButtonText, QColor(t["text"]))
+                pal.setColor(QPalette.Highlight, QColor(t["accent"]))
+                pal.setColor(QPalette.HighlightedText, QColor("#14161B" if name == "日间白" else "#FFFFFF"))
+                pal.setColor(QPalette.ToolTipBase, QColor(t["card"]))
+                pal.setColor(QPalette.ToolTipText, QColor(t["text"]))
+                pal.setColor(QPalette.PlaceholderText, QColor(t["sub"]))
+                app.setPalette(pal)
+            except Exception:
+                logger.exception("设置主题 palette 失败")
+
+        self.setStyleSheet(WINDOW_QSS)
         try:
+            if self.centralWidget() is not None:
+                self.centralWidget().setStyleSheet(WINDOW_QSS)
             self.logo_name.setStyleSheet(
                 "font-size:15px;font-weight:600;color:%s;letter-spacing:1px;" % t["title"])
             for w in self.findChildren(QLabel):
@@ -1093,6 +1120,7 @@ class MainWindow(QMainWindow):
                     w.setStyleSheet("")
         except Exception:
             pass
+
         for page in getattr(self, "pages", []):
             for fn in ("render", "refresh"):
                 if hasattr(page, fn):
@@ -1101,6 +1129,26 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
                     break
+
+        # 让已经创建的原生控件重新 polish，避免 macOS 缓存旧调色板
+        try:
+            if app is not None:
+                for w in app.allWidgets():
+                    try:
+                        w.style().unpolish(w)
+                        w.style().polish(w)
+                        w.update()
+                    except Exception:
+                        pass
+                for w in app.topLevelWidgets():
+                    try:
+                        w.setStyleSheet(WINDOW_QSS)
+                        w.update()
+                    except Exception:
+                        pass
+        except Exception:
+            logger.exception("刷新主题控件失败")
+        self.update()
 
     def show_normal(self):
         self.showNormal()

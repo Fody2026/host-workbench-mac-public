@@ -565,6 +565,7 @@ class SettingsPage(QWidget):
         self.cb_theme = QComboBox()
         self.cb_theme.addItems(theme.theme_names())
         self.cb_theme.setMinimumWidth(200)
+        self.cb_theme.currentTextChanged.connect(self._preview_theme)
         g.addWidget(self.cb_theme, 0, 1)
         tp = QLabel("选择后立即生效，无需重启")
         tp.setObjectName("SubTitle")
@@ -875,6 +876,18 @@ class SettingsPage(QWidget):
             QMessageBox.information(self, "恢复成功", "备份已恢复，请重新打开应用生效。")
         else:
             QMessageBox.warning(self, "恢复失败", "密码错误或备份文件损坏。")
+
+    def _preview_theme(self, name):
+        """下拉框选择后立即应用并记住，不必再点保存。"""
+        if not name:
+            return
+        try:
+            set_setting("theme", name)
+            win = self.window()
+            if hasattr(win, "apply_theme"):
+                win.apply_theme(name)
+        except Exception:
+            logger.exception("即时切换主题失败")
 
     def save(self):
         set_setting("theme", self.cb_theme.currentText())
