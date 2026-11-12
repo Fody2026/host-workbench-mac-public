@@ -586,6 +586,7 @@ class AIWriterPage(QWidget):
         self._build()
         self._refresh_docs()
         self._refresh_status()
+        self._refresh_questionnaires()
 
     # ---------- 界面 ----------
     def _build(self):
@@ -623,6 +624,21 @@ class AIWriterPage(QWidget):
         b_scanm.clicked.connect(self.scan_models)
         mrow.addWidget(b_scanm)
         lay.addLayout(mrow)
+
+        qrow = QHBoxLayout()
+        qrow.setSpacing(8)
+        qrow.addWidget(QLabel("客户问卷"))
+        self.cb_questionnaire = QComboBox()
+        self.cb_questionnaire.setMinimumWidth(320)
+        self.cb_questionnaire.activated.connect(self._on_questionnaire_changed)
+        qrow.addWidget(self.cb_questionnaire, 1)
+        self.lb_questionnaire = QLabel("未选择（可选）")
+        self.lb_questionnaire.setObjectName("SubTitle")
+        qrow.addWidget(self.lb_questionnaire)
+        b_qrefresh = QPushButton("刷新")
+        b_qrefresh.clicked.connect(self._refresh_questionnaires)
+        qrow.addWidget(b_qrefresh)
+        lay.addLayout(qrow)
 
         left = make_card()
         lv = QVBoxLayout(left)
@@ -836,6 +852,69 @@ class AIWriterPage(QWidget):
                 break
         return "\n\n".join(chunks)
 
+    def _refresh_questionnaires(self):
+        if not hasattr(self, "cb_questionnaire"):
+            return
+        cur = self.cb_questionnaire.currentData()
+        self.cb_questionnaire.blockSignals(True)
+        self.cb_questionnaire.clear()
+        self.cb_questionnaire.addItem("不使用问卷", 0)
+        try:
+            rows = self.db.questionnaires()
+        except Exception:
+            rows = []
+        for q in rows:
+            label = f"{q.get('wedding_date','')} · {q.get('couple','')}"
+            self.cb_questionnaire.addItem(label, q["id"])
+        idx = self.cb_questionnaire.findData(cur)
+        self.cb_questionnaire.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cb_questionnaire.blockSignals(False)
+        self._on_questionnaire_changed()
+
+    def _on_questionnaire_changed(self, *_):
+        qid = self.cb_questionnaire.currentData() if hasattr(self, "cb_questionnaire") else 0
+        if not qid:
+            self.lb_questionnaire.setText("未选择（可选）")
+            return
+        try:
+            q = self.db.questionnaire(qid)
+            n = len(self.db.questionnaire_submissions(qid))
+        except Exception:
+            q, n = None, 0
+        self.lb_questionnaire.setText(f"已选：{q.get('couple','')} · {n} 份提交" if q else "未选择")
+
+    def _questionnaire_context(self):
+        qid = self.cb_questionnaire.currentData() if hasattr(self, "cb_questionnaire") else 0
+        if not qid:
+            return ""
+        try:
+            q = self.db.questionnaire(qid)
+            subs = self.db.questionnaire_submissions(qid)
+        except Exception:
+            return ""
+        if not q:
+            return ""
+        lines = [f"【已选客户问卷】{q.get('couple','')} · {q.get('wedding_date','')} · {q.get('venue','')}"]
+        if not subs:
+            lines.append("目前还没有客户提交记录；请基于问卷结构提问，不要虚构答案。")
+            if q.get("template_text"):
+                lines.append("问卷结构：\n" + q.get("template_text", "")[:2000])
+            return "\n".join(lines)
+        for i, s in enumerate(subs[:5], 1):
+            try:
+                ans = json.loads(s.get("answers_json") or "{}")
+            except Exception:
+                ans = {}
+            parts = [f"{k}：{v}" for k, v in ans.items() if str(v).strip()]
+            lines.append(f"提交{i}（{s.get('created','')}）：\n" + "\n".join(parts)[:3000])
+        if len(subs) > 5:
+            lines.append(f"（另有 {len(subs)-5} 份提交未展开）")
+        return "\n".join(lines)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._refresh_questionnaires()
+
     def _system_prompt(self):
         lines = [
             "你是婚礼主持人鹏飞的写作搭档，帮他写婚礼台词、创意环节、改稿和想说法。",
@@ -846,6 +925,9 @@ class AIWriterPage(QWidget):
         if style:
             lines.append("\n【鹏飞的写词习惯 / 范文（来自他上传的文档，请严格模仿其句式、用词与节奏）】\n"
                          + style)
+        qctx = self._questionnaire_context()
+        if qctx:
+            lines.append("\n" + qctx + "\n以上问卷信息只用于本次写词，不要向客户复述隐私。")
         return "\n".join(lines)
 
     def _chat_prompt(self, text):
@@ -1541,15 +1623,19 @@ class DeveloperPage(QWidget):
         t2.setObjectName("SectionTitle")
         v2.addWidget(t2)
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("备份目录"))
+        row2.addWidget(QLabel("自动备份目录"))
         self.ed_backup = QLineEdit()
         self.ed_backup.setText(self.db.get_setting("backup_dir", "") or common.default_backup_dir())
         row2.addWidget(self.ed_backup, 1)
         b_choose = QPushButton("选择…")
         b_choose.clicked.connect(self.choose_backup_dir)
         row2.addWidget(b_choose)
+        b_now = QPushButton("立即备份")
+        b_now.clicked.connect(self._backup_now)
+        row2.addWidget(b_now)
         v2.addLayout(row2)
-        note = QLabel("提示：将备份目录设为百度网盘同步文件夹，即可实现档期数据的云端同步备份。")
+        note = QLabel("每 24 小时自动把软件全部数据打包到这里，只保留最新 3 份。"
+                      "该文件夹独立于软件安装目录，卸载软件不会删除，需你手动清理。")
         note.setObjectName("SubTitle")
         note.setWordWrap(True)
         v2.addWidget(note)
@@ -1566,7 +1652,7 @@ class DeveloperPage(QWidget):
         for line in [
             f"{common.APP_NAME}  v{common.APP_VERSION}",
             "面向婚礼主持人的一站式工作台：档期管理、图文设计、预演沙盘、备忘提醒、主持助理、备婚工具。",
-            "数据默认保存在本机用户目录（设置 → 打开数据目录），档期支持 AES 加密备份。",
+            "数据默认保存在本机用户目录；支持整体导出/导入（无密码），每 24 小时自动备份并保留 3 份。",
             "界面语言：简体中文 · 仅支持 Windows",
         ]:
             lb = QLabel(line)
@@ -1602,6 +1688,16 @@ class DeveloperPage(QWidget):
             f.write("sandbox_layout.json 预演沙盘自动保存的方案\n")
             f.write("图文设计_*.png   导出的图片\n")
         QMessageBox.information(self, "已生成", p)
+
+    def _backup_now(self):
+        try:
+            p = common.auto_backup_if_due(force=True)
+            if p:
+                QMessageBox.information(self, "备份完成", p)
+            else:
+                QMessageBox.warning(self, "备份失败", "请检查备份目录是否可写。")
+        except Exception as e:
+            QMessageBox.critical(self, "备份失败", str(e))
 
     def choose_backup_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择备份目录", self.ed_backup.text() or data_dir())

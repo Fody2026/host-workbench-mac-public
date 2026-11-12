@@ -8,7 +8,7 @@ import json
 import logging
 
 from PySide6.QtCore import Qt, QTimer, QDate, QSize, QPoint, Signal, QRect, QRectF, QVariantAnimation, QEvent
-from PySide6.QtGui import QIcon, QFont, QColor, QPainter, QPen, QBrush, QPixmap, QAction
+from PySide6.QtGui import QIcon, QFont, QColor, QPainter, QPen, QBrush, QPixmap, QAction, QPalette
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QStyledItemDelegate, QStyleOptionViewItem, QStyle, QStackedWidget, QFrame,
@@ -496,8 +496,8 @@ class CalendarPage(QWidget):
         head.addWidget(self.btn_today)
         head.addWidget(self.btn_next)
         head.addStretch()
-        self.btn_backup = QPushButton("导出加密备份")
-        self.btn_restore = QPushButton("恢复备份")
+        self.btn_backup = QPushButton("导出全部数据")
+        self.btn_restore = QPushButton("导入全部数据")
         self.btn_backup.clicked.connect(self.export_backup_dlg)
         self.btn_restore.clicked.connect(self.restore_backup_dlg)
         head.addWidget(self.btn_backup)
@@ -607,31 +607,34 @@ class CalendarPage(QWidget):
     def refresh(self):
         self.render()
 
-    # ---------- 备份 ----------
+    # ---------- 整体数据导出 / 导入 ----------
     def export_backup_dlg(self):
         out_dir = self.db.get_setting("backup_dir", "") or common.default_backup_dir()
         os.makedirs(out_dir, exist_ok=True)
-        name = "档期备份_" + datetime.datetime.now().strftime("%Y%m%d_%H%M") + ".fhbackup"
+        name = "主持人工作台数据_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".zip"
         path = os.path.join(out_dir, name)
         try:
-            export_backup("", path)
-            QMessageBox.information(self, "备份成功", f"已导出备份（无需密码）：\n{path}\n\n"
-                                                    f"可把该文件上传到百度网盘等云盘保存。")
-            logger.info("导出备份: %s", path)
+            common.export_all(path)
+            QMessageBox.information(self, "导出成功",
+                f"已导出软件全部设置和数据（无密码）：\n{path}\n\n"
+                "包含：档期、设置、主题、密钥、模板、主持词、沙盘、音乐目录设置等。\n"
+                "可把该文件放到网盘或 U 盘。")
+            logger.info("导出全部数据: %s", path)
         except Exception as e:
-            QMessageBox.critical(self, "备份失败", str(e))
+            QMessageBox.critical(self, "导出失败", str(e))
 
     def restore_backup_dlg(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择备份文件", data_dir(), "备份文件 (*.fhbackup);;所有文件 (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择数据包", data_dir(),
+            "工作台数据包 (*.zip *.fhbackup);;所有文件 (*)")
         if not path:
             return
-        if import_backup(path, ""):
-            QMessageBox.information(self, "恢复成功", "备份已恢复，请重新打开应用生效。")
-            self.render()
-            logger.info("恢复备份: %s", path)
+        if common.import_all(path):
+            QMessageBox.information(self, "导入成功",
+                "数据已导入，请关闭并重新打开软件生效。")
+            logger.info("导入全部数据: %s", path)
         else:
-            QMessageBox.warning(self, "恢复失败", "备份文件损坏或格式不匹配。")
-
+            QMessageBox.warning(self, "导入失败", "数据包损坏或格式不匹配。")
 
 def QInputDialogGetText(parent, title, label):
     """简单密码输入对话框，返回 (text, ok)"""
@@ -802,7 +805,8 @@ class DashboardPage(QWidget):
 NAV_ITEMS = [
     ("工作台", "dashboard"), ("档期管理", "calendar"), ("图文设计", "design"),
     ("预演沙盘", "stage"), ("备忘提醒", "memo"), ("主持助理", "ai"),
-    ("备婚工具", "prep"), ("音乐播放器", "music"), ("设置", "settings"),
+    ("备婚工具", "prep"), ("客户问卷", "questionnaire"),
+    ("音乐播放器", "music"), ("设置", "settings"),
     ("开发者选项", "dev"),
 ]
 
@@ -991,6 +995,7 @@ class MainWindow(QMainWindow):
         from pages_media import SettingsPage
         from pages_misc import MemoPage, AIWriterPage, DeveloperPage
         from pages_prep import PrepPage
+        from pages_questionnaire import QuestionnairePage
 
         self.dashboard = DashboardPage(db)
         self.calendar = CalendarPage(db)
@@ -999,12 +1004,14 @@ class MainWindow(QMainWindow):
         self.memo = MemoPage(db)
         self.ai_page = AIWriterPage(db)
         self.prep = PrepPage(db)
+        self.questionnaire = QuestionnairePage(db)
         self.music = MusicPage()
         self.settings = SettingsPage()
         self.dev = DeveloperPage(db)
 
         self.pages = [self.dashboard, self.calendar, self.design, self.rehearsal,
-                      self.memo, self.ai_page, self.prep, self.music, self.settings, self.dev]
+                      self.memo, self.ai_page, self.prep, self.questionnaire,
+                      self.music, self.settings, self.dev]
         for p in self.pages:
             self.stack.addWidget(p)
 
@@ -1075,17 +1082,46 @@ class MainWindow(QMainWindow):
         elif idx == 6:
             self.prep.refresh()
         elif idx == 7:
-            self.music.refresh()
+            self.questionnaire.refresh()
         elif idx == 8:
+            self.music.refresh()
+        elif idx == 9:
             self.settings.load_values()
 
     def apply_theme(self, name):
-        """保存设置后立即换肤，无需重启"""
+        """选择/保存后立即换肤；同时强制刷新 macOS 下的原生控件与窗口"""
         global WINDOW_QSS
         WINDOW_QSS = theme.build_qss(BASE_QSS, name)
-        self.setStyleSheet(WINDOW_QSS)
         t = theme.THEMES.get(name, theme.THEMES["暗夜金"])
+        logger.info("切换主题: %s", name)
+
+        app = QApplication.instance()
+        if app is not None:
+            # 只在 MainWindow 上设置样式时，macOS 的部分原生子控件/对话框不会跟着换色；
+            # 这里同时设到 QApplication，并同步 palette 兜底。
+            app.setStyleSheet(WINDOW_QSS)
+            try:
+                pal = QPalette()
+                pal.setColor(QPalette.Window, QColor(t["bg"]))
+                pal.setColor(QPalette.WindowText, QColor(t["text"]))
+                pal.setColor(QPalette.Base, QColor(t["input"]))
+                pal.setColor(QPalette.AlternateBase, QColor(t["card_alt"]))
+                pal.setColor(QPalette.Text, QColor(t["text"]))
+                pal.setColor(QPalette.Button, QColor(t["btn"]))
+                pal.setColor(QPalette.ButtonText, QColor(t["text"]))
+                pal.setColor(QPalette.Highlight, QColor(t["accent"]))
+                pal.setColor(QPalette.HighlightedText, QColor("#14161B" if name == "日间白" else "#FFFFFF"))
+                pal.setColor(QPalette.ToolTipBase, QColor(t["card"]))
+                pal.setColor(QPalette.ToolTipText, QColor(t["text"]))
+                pal.setColor(QPalette.PlaceholderText, QColor(t["sub"]))
+                app.setPalette(pal)
+            except Exception:
+                logger.exception("设置主题 palette 失败")
+
+        self.setStyleSheet(WINDOW_QSS)
         try:
+            if self.centralWidget() is not None:
+                self.centralWidget().setStyleSheet(WINDOW_QSS)
             self.logo_name.setStyleSheet(
                 "font-size:15px;font-weight:600;color:%s;letter-spacing:1px;" % t["title"])
             for w in self.findChildren(QLabel):
@@ -1093,6 +1129,7 @@ class MainWindow(QMainWindow):
                     w.setStyleSheet("")
         except Exception:
             pass
+
         for page in getattr(self, "pages", []):
             for fn in ("render", "refresh"):
                 if hasattr(page, fn):
@@ -1101,6 +1138,26 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
                     break
+
+        # 让已经创建的原生控件重新 polish，避免 macOS 缓存旧调色板
+        try:
+            if app is not None:
+                for w in app.allWidgets():
+                    try:
+                        w.style().unpolish(w)
+                        w.style().polish(w)
+                        w.update()
+                    except Exception:
+                        pass
+                for w in app.topLevelWidgets():
+                    try:
+                        w.setStyleSheet(WINDOW_QSS)
+                        w.update()
+                    except Exception:
+                        pass
+        except Exception:
+            logger.exception("刷新主题控件失败")
+        self.update()
 
     def show_normal(self):
         self.showNormal()
@@ -1210,7 +1267,8 @@ def _run_selftest(app, win, db, outdir):
     def run():
         try:
             for idx, name in [(0, "0-dashboard"), (2, "1-design"), (5, "4-ai"),
-                              (6, "2-prep"), (3, "3-sandbox"), (7, "5-music")]:
+                              (6, "2-prep"), (3, "3-sandbox"), (7, "6-questionnaire"),
+                              (8, "5-music")]:
                 win.switch_page(idx)
                 for _ in range(4):
                     app.processEvents()
@@ -1295,6 +1353,192 @@ def _run_selftest(app, win, db, outdir):
     QTimer.singleShot(1200, run)
 
 
+class OnboardingWizard(QDialog):
+    """首次导入密钥后的引导：数据目录、导入、名称、主题、音乐、AI Key。"""
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.imported = False
+        self.setWindowTitle("欢迎使用主持人工作台 · 首次设置")
+        self.resize(720, 520)
+        self.setStyleSheet(WINDOW_QSS)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 20)
+        root.setSpacing(14)
+        title = QLabel("首次使用引导")
+        title.setObjectName("Title")
+        root.addWidget(title)
+        self.hint = QLabel("跟着做完这几步，以后就不用再设置了。带「可跳过」的步骤可以以后再补。")
+        self.hint.setObjectName("SubTitle")
+        self.hint.setWordWrap(True)
+        root.addWidget(self.hint)
+
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, 1)
+        self.pages = []
+        self._build_pages()
+
+        nav = QHBoxLayout()
+        self.back_btn = QPushButton("上一步")
+        self.skip_btn = QPushButton("跳过本步")
+        self.next_btn = QPushButton("下一步")
+        self.next_btn.setObjectName("GoldBtn")
+        self.back_btn.clicked.connect(self.back)
+        self.skip_btn.clicked.connect(self.skip)
+        self.next_btn.clicked.connect(self.next)
+        nav.addWidget(self.back_btn)
+        nav.addStretch(1)
+        nav.addWidget(self.skip_btn)
+        nav.addWidget(self.next_btn)
+        root.addLayout(nav)
+        self.idx = 0
+        self.refresh()
+
+    def _page(self, title, hint):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(4, 10, 4, 10)
+        v.setSpacing(10)
+        t = QLabel(title); t.setObjectName("SectionTitle"); v.addWidget(t)
+        h = QLabel(hint); h.setObjectName("SubTitle"); h.setWordWrap(True); v.addWidget(h)
+        return w, v
+
+    def _folder_row(self, v, edit, title="选择文件夹"):
+        row = QHBoxLayout()
+        row.addWidget(edit, 1)
+        b = QPushButton("浏览…")
+        b.clicked.connect(lambda: self.pick_dir(edit, title))
+        row.addWidget(b)
+        v.addLayout(row)
+
+    def _build_pages(self):
+        # 0 数据文件夹
+        w, v = self._page("① 用户数据文件夹",
+            "每 24 小时自动把软件全部数据打包到这里，只保留最新 3 份。\n"
+            "这个文件夹独立于软件安装目录：卸载/删除软件不会删除它，只有你自己能删。")
+        self.ed_dir = QLineEdit(self.db.get_setting("backup_dir", "") or common.default_backup_dir())
+        v.addWidget(QLabel("自动备份文件夹"))
+        self._folder_row(v, self.ed_dir)
+        v.addWidget(QLabel("建议选 D 盘或网盘同步文件夹，例如 D:\\主持人工作台"))
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 1 导入数据
+        w, v = self._page("② 导入用户数据（可跳过）",
+            "如果你之前导出过数据包（.zip），可以在这里直接导入；\n"
+            "新装软件、换电脑、升级版本都用它恢复。没有就跳过。")
+        b = QPushButton("选择数据包并导入…")
+        b.clicked.connect(self.do_import)
+        v.addWidget(b)
+        self.lb_import = QLabel("尚未导入")
+        self.lb_import.setObjectName("SubTitle")
+        self.lb_import.setWordWrap(True)
+        v.addWidget(self.lb_import)
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 2 名称
+        w, v = self._page("③ 工作台名称", "显示在窗口标题和首页，例如「鹏飞婚礼主持工作台」。")
+        self.ed_name = QLineEdit(self.db.get_setting("workbench_name", APP_NAME))
+        v.addWidget(self.ed_name)
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 3 主题
+        w, v = self._page("④ 软件主题", "选一个你看着舒服的界面风格，之后可在设置里随时改。")
+        self.cb_theme = QComboBox()
+        self.cb_theme.addItems(list(theme.THEMES.keys()))
+        cur = self.db.get_setting("theme", "暗夜金")
+        if cur in theme.THEMES:
+            self.cb_theme.setCurrentText(cur)
+        v.addWidget(self.cb_theme)
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 4 音乐文件夹
+        w, v = self._page("⑤ 音乐播放器扫描文件夹",
+            "婚礼用的音乐放在哪个文件夹？选好后音乐厅会自动读取。")
+        self.ed_music = QLineEdit(self.db.get_setting("music_dir", "") or os.path.join(data_dir(), "music"))
+        self._folder_row(v, self.ed_music, "选择音乐文件夹")
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 5 文字生图 Key
+        w, v = self._page("⑥ 文字生图大模型 API Key（可跳过）",
+            "用于「图文设计 → AI 生图」。不填也能用本地 SDXL；\n"
+            "填了可接云端模型（DeepSeek / 硅基流动等 OpenAI 兼容接口）。")
+        self.ed_imgkey = QLineEdit(self.db.get_setting("img_api_key", ""))
+        self.ed_imgkey.setEchoMode(QLineEdit.Password)
+        self.ed_imgkey.setPlaceholderText("sk-...（可跳过）")
+        v.addWidget(self.ed_imgkey)
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 6 主持助理 Key
+        w, v = self._page("⑦ 主持助理大模型 API Key（可跳过）",
+            "用于 AI 写词、主持助理对话。不填也能用本机 Ollama；\n"
+            "填了可接 DeepSeek 官方 API。")
+        self.ed_aikey = QLineEdit(self.db.get_setting("ai_api_key", ""))
+        self.ed_aikey.setEchoMode(QLineEdit.Password)
+        self.ed_aikey.setPlaceholderText("sk-...（可跳过）")
+        v.addWidget(self.ed_aikey)
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+    def pick_dir(self, edit, title):
+        d = QFileDialog.getExistingDirectory(self, title, edit.text() or data_dir())
+        if d:
+            edit.setText(d)
+
+    def do_import(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择数据包", "", "工作台数据包 (*.zip *.fhbackup);;所有文件 (*)")
+        if not path:
+            return
+        if common.import_all(path):
+            self.imported = True
+            self.lb_import.setText("已导入：" + path + "\n完成引导后会按导入的数据显示。")
+        else:
+            QMessageBox.warning(self, "导入失败", "数据包损坏或格式不匹配。")
+
+    def refresh(self):
+        self.stack.setCurrentIndex(self.idx)
+        self.back_btn.setEnabled(self.idx > 0)
+        self.skip_btn.setVisible(self.idx in (1, 5, 6))
+        self.next_btn.setText("完成" if self.idx == self.stack.count()-1 else "下一步")
+
+    def back(self):
+        if self.idx > 0:
+            self.idx -= 1
+            self.refresh()
+
+    def skip(self):
+        self.next()
+
+    def next(self):
+        if self.idx < self.stack.count() - 1:
+            self.idx += 1
+            self.refresh()
+        else:
+            self.finish()
+
+    def finish(self):
+        d = self.ed_dir.text().strip() or common.default_backup_dir()
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            d = common.default_backup_dir()
+        self.db.set_setting("backup_dir", d)
+        self.db.set_setting("workbench_name", self.ed_name.text().strip() or APP_NAME)
+        self.db.set_setting("theme", self.cb_theme.currentText())
+        self.db.set_setting("music_dir", self.ed_music.text().strip())
+        if self.ed_imgkey.text().strip():
+            self.db.set_setting("img_api_key", self.ed_imgkey.text().strip())
+        if self.ed_aikey.text().strip():
+            self.db.set_setting("ai_api_key", self.ed_aikey.text().strip())
+        self.db.set_setting("onboard_done", "1")
+        self.accept()
+
+
 def main():
     setup_logging("INFO")
     app = QApplication(sys.argv)
@@ -1316,9 +1560,49 @@ def main():
     import licensing
     if "--selftest" not in sys.argv and not licensing.ensure_license(WINDOW_QSS):
         sys.exit(0)
+    # 首次（导入密钥后）引导；完成后重载数据库，按导入的数据显示
+    fresh_install = False
+    try:
+        n = db.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        fresh_install = (n == 0 and not db.get_setting("workbench_name", ""))
+    except Exception:
+        fresh_install = False
+    if "--selftest" not in sys.argv and db.get_setting("onboard_done", "") != "1" and fresh_install:
+        wiz = OnboardingWizard(db)
+        wiz.exec()
+        try:
+            db.conn.close()
+        except Exception:
+            pass
+        db = DB()
+        WINDOW_QSS = theme.build_qss(BASE_QSS, db.get_setting("theme", "暗夜金"))
+    # 自动备份目录不能放在软件数据目录里，避免卸载时被一起删掉
+    try:
+        bd = db.get_setting("backup_dir", "")
+        root = os.path.abspath(data_dir())
+        if (not bd) or os.path.abspath(bd).lower().startswith(root.lower()):
+            db.set_setting("backup_dir", common.default_backup_dir())
+    except Exception:
+        pass
+    # 启动即检查自动备份：距上次 >=24 小时就导出，保留最新 3 份
+    try:
+        p = common.auto_backup_if_due()
+        if p:
+            logger.info("自动备份: %s", p)
+    except Exception:
+        logger.exception("自动备份失败")
     win = MainWindow(db)
     win.show()
     logger.info("应用启动")
+    # 长时间挂机也按小时复查一次
+    try:
+        timer = QTimer(win)
+        timer.setInterval(3600 * 1000)
+        timer.timeout.connect(lambda: common.auto_backup_if_due())
+        timer.start()
+        win._auto_backup_timer = timer
+    except Exception:
+        pass
     if "--selftest" in sys.argv:
         i = sys.argv.index("--selftest")
         outdir = sys.argv[i + 1] if len(sys.argv) > i + 1 else os.path.join(
@@ -1329,3 +1613,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

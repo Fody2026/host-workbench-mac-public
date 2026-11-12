@@ -13,7 +13,7 @@ import tempfile
 import datetime
 
 APP_NAME = "主持人工作台"
-APP_VERSION = "4.8.0"
+APP_VERSION = "4.8.1"
 
 
 def base_dir() -> str:
@@ -24,8 +24,7 @@ def base_dir() -> str:
 
 
 def open_path(path):
-    """跨平台打开文件/文件夹"""
-    import subprocess, sys
+    import subprocess
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(path)])
@@ -185,6 +184,31 @@ class DB:
             text TEXT DEFAULT '',
             created TEXT DEFAULT ''
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS questionnaires(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
+            couple TEXT DEFAULT '',
+            wedding_date TEXT DEFAULT '',
+            venue TEXT DEFAULT '',
+            template_name TEXT DEFAULT '',
+            template_path TEXT DEFAULT '',
+            template_text TEXT DEFAULT '',
+            form_url TEXT DEFAULT '',
+            qr_path TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            created TEXT DEFAULT '',
+            updated TEXT DEFAULT ''
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS questionnaire_submissions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            questionnaire_id INTEGER NOT NULL,
+            guest_name TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            answers_json TEXT DEFAULT '{}',
+            remote_hash TEXT DEFAULT '',
+            created TEXT DEFAULT ''
+        )""")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_qsub_hash ON questionnaire_submissions(questionnaire_id, remote_hash)")
         self._seed_prep(c)
         self.conn.commit()
 
@@ -467,6 +491,60 @@ class DB:
         return {"events": total, "open_memos": open_memo}
 
     # ---------- 年度统计 ----------
+    # ---------- 客户问卷 ----------
+    def questionnaires(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM questionnaires ORDER BY wedding_date DESC, id DESC").fetchall()]
+
+    def questionnaire(self, qid):
+        r = self.conn.execute("SELECT * FROM questionnaires WHERE id=?", (qid,)).fetchone()
+        return dict(r) if r else None
+
+    def add_questionnaire(self, data: dict) -> int:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        c = self.conn.execute(
+            """INSERT INTO questionnaires(title,couple,wedding_date,venue,template_name,template_path,
+               template_text,form_url,qr_path,notes,created,updated)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (data.get("title", ""), data.get("couple", ""), data.get("wedding_date", ""),
+             data.get("venue", ""), data.get("template_name", ""), data.get("template_path", ""),
+             data.get("template_text", ""), data.get("form_url", ""), data.get("qr_path", ""),
+             data.get("notes", ""), now, now))
+        self.conn.commit()
+        return int(c.lastrowid)
+
+    def update_questionnaire(self, qid, **kw):
+        if not kw:
+            return
+        allowed = {"title", "couple", "wedding_date", "venue", "template_name", "template_path",
+                   "template_text", "form_url", "qr_path", "notes"}
+        fields = [k for k in kw if k in allowed]
+        if not fields:
+            return
+        sets = ",".join(f"{k}=?" for k in fields)
+        args = [kw[k] for k in fields] + [datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), qid]
+        self.conn.execute(f"UPDATE questionnaires SET {sets},updated=? WHERE id=?", args)
+        self.conn.commit()
+
+    def delete_questionnaire(self, qid):
+        self.conn.execute("DELETE FROM questionnaire_submissions WHERE questionnaire_id=?", (qid,))
+        self.conn.execute("DELETE FROM questionnaires WHERE id=?", (qid,))
+        self.conn.commit()
+
+    def questionnaire_submissions(self, qid):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM questionnaire_submissions WHERE questionnaire_id=? ORDER BY id DESC", (qid,)).fetchall()]
+
+    def add_questionnaire_submission(self, qid, guest_name, phone, answers: dict, remote_hash: str) -> bool:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        c = self.conn.execute(
+            """INSERT OR IGNORE INTO questionnaire_submissions
+               (questionnaire_id,guest_name,phone,answers_json,remote_hash,created)
+               VALUES(?,?,?,?,?,?)""",
+            (qid, guest_name, phone, json.dumps(answers, ensure_ascii=False), remote_hash, now))
+        self.conn.commit()
+        return c.rowcount > 0
+
     def stats_year(self, year: int) -> dict:
         prefix = f"{year}-"
         rows = self.conn.execute(
@@ -515,8 +593,11 @@ def _shared():
 
 
 def default_backup_dir() -> str:
-    """默认备份目录：D:\主持人工作台"""
-    d = os.path.join("D:" + os.sep, "主持人工作台")
+    """默认备份目录：Windows 为 D:\主持人工作台，macOS 为 ~/Documents/主持人工作台数据"""
+    if sys.platform == "darwin":
+        d = os.path.join(os.path.expanduser("~"), "Documents", "主持人工作台数据")
+    else:
+        d = os.path.join("D:" + os.sep, "主持人工作台")
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
@@ -646,6 +727,113 @@ def import_backup(path: str, password: str) -> bool:
         return True
     finally:
         shutil.rmtree(tmpd, ignore_errors=True)
+
+
+# ---------------- 整体数据导出 / 导入（无密码） ----------------
+AUTO_KEEP = 3
+
+
+def _skip_export(rel: str) -> bool:
+    parts = rel.replace("\\", "/").split("/")
+    if any(p in ("logs", "__pycache__", "backups", "selftest") for p in parts):
+        return True
+    low = rel.lower()
+    return low.endswith((".log", ".tmp", ".pyc"))
+
+
+def export_all(out_path: str) -> str:
+    """把整个数据目录打包成 zip（含数据库、设置、模板、主持词等），不加密。"""
+    root = data_dir()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in ("logs", "__pycache__", "backups", "selftest")]
+            for fn in filenames:
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, root)
+                if _skip_export(rel):
+                    continue
+                z.write(full, rel)
+        z.writestr("manifest.json", json.dumps({
+            "app": APP_NAME, "version": APP_VERSION,
+            "exported": datetime.datetime.now().isoformat(timespec="seconds"),
+            "kind": "full-data",
+        }, ensure_ascii=False, indent=2))
+    return out_path
+
+
+def import_all(zip_path: str) -> bool:
+    """导入整体数据包，覆盖当前数据；导入前自动备份当前 host.db。"""
+    try:
+        if not zipfile.is_zipfile(zip_path):
+            # 兼容 4.8.1 之前的加密 .fhbackup（旧备份无密码）
+            return import_backup(zip_path, "")
+        with zipfile.ZipFile(zip_path) as z:
+            names = z.namelist()
+            if "host.db" not in names and "manifest.json" not in names:
+                return False
+            root = data_dir()
+            if os.path.exists(DB_PATH):
+                shutil.copy2(DB_PATH, DB_PATH + ".before_import_" +
+                             datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
+            tmp = tempfile.mkdtemp()
+            try:
+                z.extractall(tmp)
+                for dirpath, _dirs, files in os.walk(tmp):
+                    for fn in files:
+                        src = os.path.join(dirpath, fn)
+                        rel = os.path.relpath(src, tmp)
+                        if rel == "manifest.json":
+                            continue
+                        dst = os.path.join(root, rel)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        return True
+    except Exception:
+        return False
+
+
+def _prune_auto_backups(folder: str, keep: int = AUTO_KEEP):
+    try:
+        files = [os.path.join(folder, f) for f in os.listdir(folder)
+                 if f.startswith("主持人工作台数据_") and f.lower().endswith(".zip")]
+        files.sort(key=os.path.getmtime, reverse=True)
+        for f in files[keep:]:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def auto_backup_if_due(force: bool = False) -> str:
+    """距上次自动备份 >=24 小时则导出一次，保留最新 3 份；返回新文件或空串。"""
+    folder = get_setting("backup_dir", "") or default_backup_dir()
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        folder = default_backup_dir()
+    last = get_setting("auto_backup_last", "")
+    now = datetime.datetime.now()
+    if not force and last:
+        try:
+            prev = datetime.datetime.fromisoformat(last)
+            if (now - prev).total_seconds() < 24 * 3600:
+                return ""
+        except Exception:
+            pass
+    name = "主持人工作台数据_" + now.strftime("%Y%m%d_%H%M%S") + ".zip"
+    out = os.path.join(folder, name)
+    try:
+        export_all(out)
+        set_setting("auto_backup_last", now.isoformat(timespec="seconds"))
+        _prune_auto_backups(folder, AUTO_KEEP)
+        return out
+    except Exception:
+        return ""
 
 
 # ---------------- AI 调用 ----------------

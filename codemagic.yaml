@@ -4,6 +4,9 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     scripts:
+      - name: Secret scan
+        script: |
+          python3 tools/secret_scan.py --root .
       - name: Install dependencies
         script: |
           python3 --version
