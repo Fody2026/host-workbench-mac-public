@@ -13,7 +13,7 @@ import tempfile
 import datetime
 
 APP_NAME = "主持人工作台"
-APP_VERSION = "4.8.1"
+APP_VERSION = "4.8.2"
 
 
 def base_dir() -> str:
@@ -858,3 +858,4 @@ def call_ai(base_url: str, api_key: str, model: str, prompt: str, timeout=90) ->
     r.raise_for_status()
     data = r.json()
     return data["choices"][0]["message"]["content"]
+

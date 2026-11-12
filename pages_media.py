@@ -721,9 +721,9 @@ class SettingsPage(QWidget):
         v6.setSpacing(8)
         v6.addWidget(QLabel("数据与备份", objectName="SectionTitle"))
         row6 = QHBoxLayout()
-        b_export = QPushButton("导出加密备份")
+        b_export = QPushButton("导出全部数据")
         b_export.clicked.connect(self.export_backup_now)
-        b_import = QPushButton("恢复备份")
+        b_import = QPushButton("导入全部数据")
         b_import.clicked.connect(self.restore_backup_now)
         b_open = QPushButton("打开数据目录")
         b_open.clicked.connect(lambda: common.open_path(data_dir()))
@@ -847,47 +847,30 @@ class SettingsPage(QWidget):
         if d:
             self.ed_backup.setText(d)
 
-    # ---------- 备份 ----------
+    # ---------- 整体数据导出 / 导入 ----------
     def export_backup_now(self):
-        from PySide6.QtWidgets import QInputDialog
-        pwd, ok = QInputDialog.getText(self, "导出加密备份", "设置备份密码：", QLineEdit.Password)
-        if not ok or not pwd:
-            return
         out_dir = self.ed_backup.text() or common.default_backup_dir()
         os.makedirs(out_dir, exist_ok=True)
-        name = "档期备份_" + __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M") + ".fhbackup"
+        import datetime as _dt
+        name = "主持人工作台数据_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S") + ".zip"
         path = os.path.join(out_dir, name)
         try:
-            common.export_backup(pwd, path)
-            QMessageBox.information(self, "备份成功", f"已导出：\n{path}")
+            common.export_all(path)
+            QMessageBox.information(self, "导出成功",
+                f"已导出全部设置和数据（无密码）：\n{path}")
         except Exception as e:
-            QMessageBox.critical(self, "备份失败", str(e))
+            QMessageBox.critical(self, "导出失败", str(e))
 
     def restore_backup_now(self):
-        from PySide6.QtWidgets import QInputDialog
-        path, _ = QFileDialog.getOpenFileName(self, "选择备份文件", self.ed_backup.text() or data_dir(),
-                                              "备份文件 (*.fhbackup)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择数据包", self.ed_backup.text() or data_dir(),
+            "工作台数据包 (*.zip *.fhbackup);;所有文件 (*)")
         if not path:
             return
-        pwd, ok = QInputDialog.getText(self, "恢复备份", "请输入备份密码：", QLineEdit.Password)
-        if not ok or not pwd:
-            return
-        if common.import_backup(path, pwd):
-            QMessageBox.information(self, "恢复成功", "备份已恢复，请重新打开应用生效。")
+        if common.import_all(path):
+            QMessageBox.information(self, "导入成功", "数据已导入，请重新打开软件生效。")
         else:
-            QMessageBox.warning(self, "恢复失败", "密码错误或备份文件损坏。")
-
-    def _preview_theme(self, name):
-        """下拉框选择后立即应用并记住，不必再点保存。"""
-        if not name:
-            return
-        try:
-            set_setting("theme", name)
-            win = self.window()
-            if hasattr(win, "apply_theme"):
-                win.apply_theme(name)
-        except Exception:
-            logger.exception("即时切换主题失败")
+            QMessageBox.warning(self, "导入失败", "数据包损坏或格式不匹配。")
 
     def save(self):
         set_setting("theme", self.cb_theme.currentText())

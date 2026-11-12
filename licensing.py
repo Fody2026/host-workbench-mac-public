@@ -56,14 +56,38 @@ def verify_file(path):
         pub.verify(sig, _canonical(payload))
     except Exception:
         return False, "授权文件无效或已被篡改。", {}
+    # 授权结构：v2 起每个版本单独签发，旧密钥不再通用
+    required = ("schema", "product", "version", "machine", "expires", "issued", "license_id")
+    missing = [k for k in required if k not in payload]
+    if missing:
+        return False, "授权格式过旧或字段缺失，请使用当前版本的新授权文件。", payload
+    if payload.get("schema") != 2:
+        return False, "授权格式版本不支持。", payload
+    if payload.get("product") != "host-workbench":
+        return False, "授权产品不匹配。", payload
+    lic_ver = str(payload.get("version", ""))
+    if lic_ver != common.APP_VERSION:
+        return False, f"该授权仅适用于 v{lic_ver}，当前软件是 v{common.APP_VERSION}。", payload
     if payload.get("machine") != machine_code():
         return False, "该授权文件不是本机的（机器码不匹配）。", payload
+    import re as _re
+    if not _re.fullmatch(r"[0-9A-F]{20}", str(payload.get("machine", ""))):
+        return False, "授权机器码格式错误。", payload
     try:
         exp = datetime.date.fromisoformat(payload.get("expires", "1970-01-01"))
-        if exp < datetime.date.today():
-            return False, f"授权已于 {exp} 到期。", payload
+        issued = datetime.date.fromisoformat(payload.get("issued", "1970-01-01"))
     except Exception:
         return False, "授权有效期格式错误。", payload
+    if issued > datetime.date.today() + datetime.timedelta(days=1):
+        return False, "授权签发日期异常。", payload
+    if exp < datetime.date.today():
+        return False, f"授权已于 {exp} 到期。", payload
+    if exp < issued:
+        return False, "授权有效期早于签发日期。", payload
+    try:
+        uuid.UUID(str(payload.get("license_id", "")))
+    except Exception:
+        return False, "授权编号格式错误。", payload
     return True, "授权有效", payload
 
 
@@ -104,8 +128,8 @@ def ensure_license(style_sheet=""):
     title = QLabel("请导入本机授权文件")
     title.setObjectName("Title")
     lay.addWidget(title)
-    tip = QLabel("把下面这串机器码发给作者，作者会生成专属 license.lic 发给你。\n"
-                 "授权文件绑定本机，复制到其他电脑无效。")
+    tip = QLabel("把下面这串机器码和软件版本号发给作者，作者会生成专属 license.lic。\n"
+                 "授权绑定本机 + 当前版本，复制到其他电脑或别的版本都无效。")
     tip.setObjectName("SubTitle")
     tip.setWordWrap(True)
     lay.addWidget(tip)
