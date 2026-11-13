@@ -690,6 +690,24 @@ class SettingsPage(QWidget):
     def _build_ui(self):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        # 顶部固定条：标题 + 保存按钮，不随内容滚动
+        topbar = QHBoxLayout()
+        topbar.setContentsMargins(0, 0, 12, 8)
+        title = QLabel("设置")
+        title.setObjectName("Title")
+        topbar.addWidget(title)
+        topbar.addStretch()
+        b_save_top = QPushButton("保存设置")
+        b_save_top.setObjectName("Primary")
+        b_save_top.setMinimumWidth(140)
+        b_save_top.setStyleSheet(
+            "QPushButton{background:#C9A86A;color:#101216;font-weight:700;"
+            "border:1px solid #E6CC96;border-radius:8px;padding:8px 20px;}"
+            "QPushButton:hover{background:#DCC08A;}"
+            "QPushButton:pressed{background:#B89658;}")
+        b_save_top.clicked.connect(self.save)
+        topbar.addWidget(b_save_top)
+        outer.addLayout(topbar)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -701,10 +719,6 @@ class SettingsPage(QWidget):
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(0, 0, 12, 12)
         lay.setSpacing(12)
-
-        title = QLabel("设置")
-        title.setObjectName("Title")
-        lay.addWidget(title)
 
         # 常规
         card1 = make_card()
@@ -896,14 +910,6 @@ class SettingsPage(QWidget):
         v6.addLayout(row6)
         lay.addWidget(card6)
 
-        row_save = QHBoxLayout()
-        b_save = QPushButton("保存设置")
-        b_save.setObjectName("Primary")
-        b_save.setFixedWidth(160)
-        b_save.clicked.connect(self.save)
-        row_save.addWidget(b_save)
-        row_save.addStretch()
-        lay.addLayout(row_save)
         lay.addStretch()
 
     def load_values(self):
