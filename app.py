@@ -6,9 +6,10 @@ import sys
 import datetime
 import json
 import logging
+import threading
 
-from PySide6.QtCore import Qt, QTimer, QDate, QSize, QPoint, Signal, QRect, QRectF, QVariantAnimation, QEvent
-from PySide6.QtGui import QIcon, QFont, QColor, QPainter, QPen, QBrush, QPixmap, QAction, QPalette
+from PySide6.QtCore import Qt, QTimer, QDate, QSize, QPoint, Signal, QRect, QRectF, QVariantAnimation, QEvent, QLockFile, QDir
+from PySide6.QtGui import QIcon, QFont, QColor, QPainter, QPen, QBrush, QPixmap, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QStyledItemDelegate, QStyleOptionViewItem, QStyle, QStackedWidget, QFrame,
@@ -805,7 +806,7 @@ class DashboardPage(QWidget):
 NAV_ITEMS = [
     ("工作台", "dashboard"), ("档期管理", "calendar"), ("图文设计", "design"),
     ("预演沙盘", "stage"), ("备忘提醒", "memo"), ("主持助理", "ai"),
-    ("备婚工具", "prep"), ("客户问卷", "questionnaire"),
+    ("备婚工具", "prep"),
     ("音乐播放器", "music"), ("设置", "settings"),
     ("开发者选项", "dev"),
 ]
@@ -818,9 +819,9 @@ class NavDelegate(QStyledItemDelegate):
         super().__init__(view)
         self.view = view
         self.hover_row = -1
-        self.hover = 0.0
+        self._hover_val = 0.0
         self.shake_row = -1
-        self.shake = 0.0
+        self._shake_val = 0.0
         self.hover_anim = QVariantAnimation(self)
         self.hover_anim.setDuration(150)
         self.hover_anim.valueChanged.connect(self._on_hover)
@@ -829,11 +830,11 @@ class NavDelegate(QStyledItemDelegate):
         self.shake_anim.valueChanged.connect(self._on_shake)
 
     def _on_hover(self, v):
-        self.hover = float(v)
+        self._hover_val = float(v)
         self.view.viewport().update()
 
     def _on_shake(self, v):
-        self.shake = float(v)
+        self._shake_val = float(v)
         self.view.viewport().update()
 
     def set_hover(self, row):
@@ -841,7 +842,7 @@ class NavDelegate(QStyledItemDelegate):
             return
         self.hover_row = row
         self.hover_anim.stop()
-        self.hover_anim.setStartValue(self.hover)
+        self.hover_anim.setStartValue(self._hover_val)
         self.hover_anim.setEndValue(1.0 if row >= 0 else 0.0)
         self.hover_anim.start()
 
@@ -854,10 +855,10 @@ class NavDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         row = index.row()
-        grow = self.hover if row == self.hover_row else 0.0
+        grow = self._hover_val if row == self.hover_row else 0.0
         off = 0.0
-        if row == self.shake_row and 0 < self.shake < 1:
-            off = math.sin(self.shake * math.pi * 4) * 11 * (1 - self.shake) ** 1.5
+        if row == self.shake_row and 0 < self._shake_val < 1:
+            off = math.sin(self._shake_val * math.pi * 4) * 11 * (1 - self._shake_val) ** 1.5
         if grow <= 0.001 and abs(off) < 0.5:
             super().paint(painter, option, index)
             return
@@ -995,7 +996,6 @@ class MainWindow(QMainWindow):
         from pages_media import SettingsPage
         from pages_misc import MemoPage, AIWriterPage, DeveloperPage
         from pages_prep import PrepPage
-        from pages_questionnaire import QuestionnairePage
 
         self.dashboard = DashboardPage(db)
         self.calendar = CalendarPage(db)
@@ -1004,13 +1004,12 @@ class MainWindow(QMainWindow):
         self.memo = MemoPage(db)
         self.ai_page = AIWriterPage(db)
         self.prep = PrepPage(db)
-        self.questionnaire = QuestionnairePage(db)
         self.music = MusicPage()
         self.settings = SettingsPage()
         self.dev = DeveloperPage(db)
 
         self.pages = [self.dashboard, self.calendar, self.design, self.rehearsal,
-                      self.memo, self.ai_page, self.prep, self.questionnaire,
+                      self.memo, self.ai_page, self.prep,
                       self.music, self.settings, self.dev]
         for p in self.pages:
             self.stack.addWidget(p)
@@ -1082,10 +1081,8 @@ class MainWindow(QMainWindow):
         elif idx == 6:
             self.prep.refresh()
         elif idx == 7:
-            self.questionnaire.refresh()
-        elif idx == 8:
             self.music.refresh()
-        elif idx == 9:
+        elif idx == 8:
             self.settings.load_values()
 
     def apply_theme(self, name):
@@ -1236,6 +1233,17 @@ class MainWindow(QMainWindow):
             self.tray.hide()
         except Exception:
             pass
+        # 等待后台线程退出，避免关闭时 QThread 被销毁导致崩溃
+        try:
+            from PySide6.QtCore import QThread
+            for t in self.findChildren(QThread):
+                try:
+                    t.quit()
+                    t.wait(1500)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def quit_app(self):
         self._cleanup()
@@ -1267,7 +1275,7 @@ def _run_selftest(app, win, db, outdir):
     def run():
         try:
             for idx, name in [(0, "0-dashboard"), (2, "1-design"), (5, "4-ai"),
-                              (6, "2-prep"), (3, "3-sandbox"), (7, "6-questionnaire"),
+                              (6, "2-prep"), (3, "3-sandbox"),
                               (8, "5-music")]:
                 win.switch_page(idx)
                 for _ in range(4):
@@ -1438,7 +1446,7 @@ class OnboardingWizard(QDialog):
         self.stack.addWidget(w)
 
         # 2 名称
-        w, v = self._page("③ 工作台名称", "显示在窗口标题和首页，例如「鹏飞婚礼主持工作台」。")
+        w, v = self._page("③ 工作台名称", "显示在窗口标题和首页，例如「某某婚礼主持工作台」。")
         self.ed_name = QLineEdit(self.db.get_setting("workbench_name", APP_NAME))
         v.addWidget(self.ed_name)
         v.addStretch(1)
@@ -1547,13 +1555,54 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     app.setStyle("Fusion")
+    # 低内存保护：限制单张图片解码上限，避免超大图直接把进程撑爆
+    try:
+        from PySide6.QtGui import QImageReader
+        QImageReader.setAllocationLimit(128)
+    except Exception:
+        pass
+    # 兜底异常：记录并提示，而不是直接消失
+    def _excepthook(tp, val, tb):
+        try:
+            logger.exception("未捕获异常", exc_info=(tp, val, tb))
+        except Exception:
+            pass
+        try:
+            QMessageBox.critical(None, "程序遇到异常",
+                f"{val}\n\n错误已写入日志；请重启软件，若重复出现请把日志发给作者。")
+        except Exception:
+            pass
+    sys.excepthook = _excepthook
     # 内置可商用艺术字体
     try:
         import fonts
         fonts.load_builtin_fonts()
     except Exception:
         logger.exception("加载内置字体失败")
+    # 单实例锁：避免重复双击/多开造成数据库争用
+    _lock = None
+    if "--selftest" not in sys.argv:
+        _lock = QLockFile(QDir.temp().filePath("HostWorkbench_4x.lock"))
+        _lock.setStaleLockTime(30000)
+        if not _lock.tryLock(100):
+            QMessageBox.information(None, "已在运行", "主持人工作台已经在运行，请从任务栏打开已有窗口。")
+            sys.exit(0)
+
     db = DB()
+    try:
+        ram = common.total_ram_gb()
+        if 0 < ram <= 8.5:
+            db.set_setting("low_memory", "1")
+            logger.warning("检测到低内存：%.1f GB，已启用保护", ram)
+        else:
+            db.set_setting("low_memory", "0")
+    except Exception:
+        pass
+    if getattr(db, "recovered", False) and "--selftest" not in sys.argv:
+        try:
+            QMessageBox.warning(None, "数据已恢复", db.recovery_msg)
+        except Exception:
+            pass
     # 主题（设置中可选多套风格）
     global WINDOW_QSS
     WINDOW_QSS = theme.build_qss(BASE_QSS, db.get_setting("theme", "暗夜金"))
@@ -1569,7 +1618,8 @@ def main():
         fresh_install = False
     if "--selftest" not in sys.argv and db.get_setting("onboard_done", "") != "1" and fresh_install:
         wiz = OnboardingWizard(db)
-        wiz.exec()
+        if wiz.exec() != QDialog.Accepted:
+            sys.exit(0)
         try:
             db.conn.close()
         except Exception:
@@ -1584,21 +1634,38 @@ def main():
             db.set_setting("backup_dir", common.default_backup_dir())
     except Exception:
         pass
-    # 启动即检查自动备份：距上次 >=24 小时就导出，保留最新 3 份
-    try:
-        p = common.auto_backup_if_due()
-        if p:
-            logger.info("自动备份: %s", p)
-    except Exception:
-        logger.exception("自动备份失败")
+    def _auto_backup_bg():
+        try:
+            bdb = DB()
+            p = common.auto_backup_if_due(db=bdb)
+            try:
+                bdb.conn.close()
+            except Exception:
+                pass
+            if p:
+                logger.info("自动备份: %s", p)
+        except Exception:
+            logger.exception("自动备份失败")
+
     win = MainWindow(db)
     win.show()
+    try:
+        if db.get_setting("low_memory", "0") == "1" and db.get_setting("low_memory_warned", "0") != "1":
+            db.set_setting("low_memory_warned", "1")
+            QTimer.singleShot(1200, lambda: QMessageBox.information(
+                win, "低内存保护",
+                "检测到本机内存较小，已启用图片解码限制并关闭重型生图的本地模式。\n"
+                "建议使用 FLUX/Pollinations 免费接口，避免同时打开多个大型程序。"))
+    except Exception:
+        pass
+    # 窗口先显示，自动备份放到后台线程，避免启动时卡住界面
+    QTimer.singleShot(2000, lambda: threading.Thread(target=_auto_backup_bg, daemon=True).start())
     logger.info("应用启动")
     # 长时间挂机也按小时复查一次
     try:
         timer = QTimer(win)
         timer.setInterval(3600 * 1000)
-        timer.timeout.connect(lambda: common.auto_backup_if_due())
+        timer.timeout.connect(lambda: threading.Thread(target=_auto_backup_bg, daemon=True).start())
         timer.start()
         win._auto_backup_timer = timer
     except Exception:

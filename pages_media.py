@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
     QListWidgetItem, QFrame, QComboBox, QSlider, QLineEdit, QFileDialog,
     QMessageBox, QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox, QGridLayout,
-    QAbstractItemView, QInputDialog, QScrollArea
+    QAbstractItemView, QInputDialog, QScrollArea, QDialog, QApplication
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -527,6 +527,160 @@ ACCENTS = {
 
 
 # -*- coding: utf-8 -*-
+IMG_PRESETS = [
+    ("Hugging Face · FLUX.1-schnell（免费）", "hf", "", ""),
+    ("Pollinations（免费，备用）", "pollinations", "", ""),
+    ("智谱 CogView-3-Flash", "zhipu", "https://open.bigmodel.cn/api/paas/v4", "cogview-3-flash"),
+    ("豆包 Seedream · 火山方舟", "doubao", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedream-5-5-261028"),
+    ("硅基流动 · FLUX.1-schnell", "siliconflow", "https://api.siliconflow.cn/v1", "black-forest-labs/FLUX.1-schnell"),
+    ("OpenAI · gpt-image-1", "openai", "https://api.openai.com/v1", "gpt-image-1"),
+    ("本地 SDXL（需已部署）", "local", "", ""),
+    ("自定义 OpenAI 兼容", "custom", "", ""),
+]
+
+
+class ImageConnectDialog(QDialog):
+    """图文设计生图 API 设置：和主持助理一样，选平台、填 Key、获取模型。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("生图 API 设置")
+        self.setMinimumWidth(620)
+        lay = QVBoxLayout(self); lay.setContentsMargins(22, 18, 22, 16); lay.setSpacing(10)
+        tip = QLabel("选平台后地址自动填好；填 Key 后可点“获取可用模型”，不用手找模型 ID。")
+        tip.setObjectName("SubTitle"); tip.setWordWrap(True); lay.addWidget(tip)
+        g = QGridLayout(); g.setHorizontalSpacing(10); g.setVerticalSpacing(9)
+        self.cb = QComboBox()
+        for label, key, base, model in IMG_PRESETS:
+            self.cb.addItem(label, (key, base, model))
+        self.cb.currentIndexChanged.connect(self._on_change)
+        g.addWidget(QLabel("生图平台"), 0, 0); g.addWidget(self.cb, 0, 1, 1, 2)
+        self.ed_base = QLineEdit(); self.ed_base.setReadOnly(True)
+        g.addWidget(QLabel("接口地址"), 1, 0); g.addWidget(self.ed_base, 1, 1, 1, 2)
+        self.ed_key = QLineEdit(); self.ed_key.setEchoMode(QLineEdit.Password)
+        self.ed_key.setPlaceholderText("粘贴 API Key 即可")
+        g.addWidget(QLabel("API Key"), 2, 0); g.addWidget(self.ed_key, 2, 1, 1, 2)
+        self.cb_model = QComboBox(); self.cb_model.setEditable(True)
+        g.addWidget(QLabel("模型"), 3, 0); g.addWidget(self.cb_model, 3, 1, 1, 2)
+        lay.addLayout(g)
+        row = QHBoxLayout()
+        b_scan = QPushButton("扫描本机模型"); b_scan.clicked.connect(self.scan_local)
+        b_fetch = QPushButton("获取并选择可用模型"); b_fetch.clicked.connect(self.fetch_models)
+        b_check = QPushButton("测试连接"); b_check.clicked.connect(self.check)
+        row.addWidget(b_scan); row.addWidget(b_fetch); row.addWidget(b_check); row.addStretch()
+        lay.addLayout(row)
+        self.msg = QLabel(""); self.msg.setObjectName("SubTitle"); self.msg.setWordWrap(True)
+        lay.addWidget(self.msg)
+        btns = QHBoxLayout(); btns.addStretch()
+        b_cancel = QPushButton("取消"); b_cancel.clicked.connect(self.reject)
+        b_save = QPushButton("保存"); b_save.setObjectName("Primary"); b_save.clicked.connect(self.save)
+        btns.addWidget(b_cancel); btns.addWidget(b_save); lay.addLayout(btns)
+        self._load()
+
+    def _on_change(self, idx):
+        data = self.cb.currentData() or ("hf", "", "")
+        key, base, model = data
+        self.ed_base.setText(base)
+        self.ed_base.setReadOnly(key != "custom")
+        self.cb_model.clear()
+        if model:
+            self.cb_model.addItem(model)
+        self.cb_model.setEditable(True)
+        if key == "local":
+            self.cb_model.setPlaceholderText("点“扫描本机模型”导入 SDXL")
+            self.ed_key.clear(); self.ed_key.setPlaceholderText("本地模型无需 Key")
+        else:
+            self.cb_model.setPlaceholderText("填 Key 后点“获取可用模型”")
+
+    def _load(self):
+        cur = get_setting("img_provider", "hf")
+        idx = next((i for i in range(self.cb.count()) if (self.cb.itemData(i) or ("",))[0] == cur), 0)
+        self.cb.setCurrentIndex(idx)
+        self.ed_key.setText(get_setting("img_api_key", ""))
+        m = get_setting("img_model", "")
+        if cur == "doubao" and (not m or "seedream-3-0" in m.lower() or m.lower().startswith("ep-")):
+            m = "doubao-seedream-5-5-261028"
+            set_setting("img_model", m)
+        if m:
+            self.cb_model.setCurrentText(m)
+
+    def scan_local(self):
+        dirs = [r"D:\ComfyUI\models\checkpoints", r"D:\SDXL\models",
+                os.path.join(data_dir(), "models"), r"D:\H3Studio\models"]
+        found = []
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            for root, _, files in os.walk(d):
+                for f in files:
+                    if f.lower().endswith((".safetensors", ".ckpt")):
+                        found.append(os.path.join(root, f))
+                if len(found) > 50:
+                    break
+        if not found:
+            self.msg.setText("本机没有扫描到 SDXL 模型；请把 .safetensors 放到 D:\\ComfyUI\\models\\checkpoints 或 D:\\SDXL\\models。")
+            return
+        pick, ok = QInputDialog.getItem(self, "选择本地模型", "扫描到的模型：", found, 0, False)
+        if not ok or not pick:
+            return
+        set_setting("sdxl_model", pick)
+        py_path = r"D:\Python311\python.exe"
+        script = r"D:\SDXL\gen_once.py"
+        if os.path.exists(py_path):
+            set_setting("sdxl_python", py_path)
+        if os.path.exists(script):
+            set_setting("sdxl_script", script)
+        set_setting("img_provider", "local")
+        idx = next((i for i in range(self.cb.count()) if (self.cb.itemData(i) or ("",))[0] == "local"), 0)
+        self.cb.setCurrentIndex(idx)
+        self.cb_model.setCurrentText(pick)
+        self.msg.setText("已导入本地模型：" + os.path.basename(pick))
+
+    def fetch_models(self):
+        base = self.ed_base.text().strip(); key = self.ed_key.text().strip()
+        if not key:
+            self.msg.setText("先填 API Key。"); return
+        self.msg.setText("正在查询…"); QApplication.processEvents()
+        ids = common.list_models(base, key)
+        keys = ("seedream", "image", "flux", "dall", "cogview", "gpt-image")
+        imgs = [i for i in ids if any(k in i.lower() for k in keys)]
+        if not imgs:
+            self.msg.setText(f"这个 Key 返回 {len(ids)} 个模型，但其中没有生图模型；请先在平台开通生图模型。")
+            return
+        pick, ok = QInputDialog.getItem(self, "选择生图模型", "可用生图模型：", imgs, 0, False)
+        if ok and pick:
+            self.cb_model.setCurrentText(pick)
+        self.msg.setText("已选择：" + self.cb_model.currentText())
+
+    def check(self):
+        prov = (self.cb.currentData() or ("hf",))[0]
+        base = self.ed_base.text().strip(); key = self.ed_key.text().strip()
+        if prov == "local":
+            model = common.get_setting("sdxl_model", "")
+            py_path = common.get_setting("sdxl_python", r"D:\Python311\python.exe")
+            script = common.get_setting("sdxl_script", r"D:\SDXL\gen_once.py")
+            ok = os.path.exists(model) and os.path.exists(py_path) and os.path.exists(script)
+            self.msg.setText("本地环境完整，可以生成。" if ok else "本地环境缺文件：请检查模型、Python、gen_once.py。")
+            return
+        if prov in ("hf", "pollinations"):
+            self.msg.setText("免费渠道无需 Key，直接保存后生成即可。")
+            return
+        if not key:
+            self.msg.setText("先填 API Key。"); return
+        ids = common.list_models(base, key)
+        self.msg.setText(f"Key 有效，返回 {len(ids)} 个模型。" if ids else "没有返回模型列表：Key 无效或平台不支持 /models。")
+
+    def save(self):
+        data = self.cb.currentData() or ("hf", "", "")
+        prov, base, _ = data
+        self.cb_model.setEditable(True)
+        set_setting("img_provider", prov)
+        set_setting("img_base_url", self.ed_base.text().strip())
+        set_setting("img_api_key", self.ed_key.text().strip())
+        set_setting("img_model", self.cb_model.currentText().strip())
+        self.accept()
+
+
 class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -565,14 +719,13 @@ class SettingsPage(QWidget):
         self.cb_theme = QComboBox()
         self.cb_theme.addItems(theme.theme_names())
         self.cb_theme.setMinimumWidth(200)
-        self.cb_theme.currentTextChanged.connect(self._preview_theme)
         g.addWidget(self.cb_theme, 0, 1)
         tp = QLabel("选择后立即生效，无需重启")
         tp.setObjectName("SubTitle")
         g.addWidget(tp, 0, 2)
         g.addWidget(QLabel("工作台名称"), 1, 0)
         self.ed_appname = QLineEdit()
-        self.ed_appname.setPlaceholderText("显示在窗口标题与左上角，如：鹏飞婚礼工作台")
+        self.ed_appname.setPlaceholderText("显示在窗口标题与左上角，如：某某婚礼工作台")
         self.ed_appname.setMinimumWidth(200)
         g.addWidget(self.ed_appname, 1, 1, 1, 2)
         v1.addLayout(g)
@@ -682,18 +835,24 @@ class SettingsPage(QWidget):
         row5a = QHBoxLayout()
         row5a.addWidget(QLabel("生图渠道"))
         self.cb_img_provider = QComboBox()
-        self.cb_img_provider.addItem("Hugging Face · FLUX.1-schnell（免费，无需 Key）", "hf")
-        self.cb_img_provider.addItem("Pollinations · 免费（无需 Key，备用）", "pollinations")
-        self.cb_img_provider.addItem("智谱 CogView-3-Flash · 免费额度（需 Key）", "zhipu")
-        self.cb_img_provider.addItem("豆包 Seedream · 火山方舟（需 Key）", "doubao")
-        self.cb_img_provider.addItem("自定义 OpenAI 兼容接口", "custom")
+        self.cb_img_provider.addItem("Hugging Face · FLUX.1-schnell（免费，无需 Key）", ("hf", "", ""))
+        self.cb_img_provider.addItem("Pollinations · 免费（无需 Key，备用）", ("pollinations", "", ""))
+        self.cb_img_provider.addItem("智谱 CogView-3-Flash", ("zhipu", "https://open.bigmodel.cn/api/paas/v4", "cogview-3-flash"))
+        self.cb_img_provider.addItem("豆包 Seedream · 火山方舟", ("doubao", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedream-5-5-261028"))
+        self.cb_img_provider.addItem("硅基流动 · FLUX.1-schnell", ("siliconflow", "https://api.siliconflow.cn/v1", "black-forest-labs/FLUX.1-schnell"))
+        self.cb_img_provider.addItem("OpenAI · gpt-image-1", ("openai", "https://api.openai.com/v1", "gpt-image-1"))
+        self.cb_img_provider.addItem("自定义 OpenAI 兼容接口", ("custom", "", ""))
         self.cb_img_provider.currentIndexChanged.connect(self._sync_img_provider)
         row5a.addWidget(self.cb_img_provider, 1)
+        b_img_set = QPushButton("生图 API 设置…")
+        b_img_set.clicked.connect(self.open_img_connect)
+        row5a.addWidget(b_img_set)
         v5.addLayout(row5a)
         row5b = QHBoxLayout()
         row5b.addWidget(QLabel("生图接口地址"))
         self.ed_img_base = QLineEdit()
-        self.ed_img_base.setPlaceholderText("如 https://dashscope.aliyuncs.com/api/v1 或 OpenAI 兼容地址")
+        self.ed_img_base.setReadOnly(True)
+        self.ed_img_base.setPlaceholderText("选择渠道后自动填入")
         row5b.addWidget(self.ed_img_base, 1)
         v5.addLayout(row5b)
         row5c = QHBoxLayout()
@@ -704,8 +863,11 @@ class SettingsPage(QWidget):
         row5c.addWidget(QLabel("模型"))
         self.ed_img_model = QLineEdit()
         self.ed_img_model.setPlaceholderText("如 qwen-image")
-        self.ed_img_model.setFixedWidth(160)
+        self.ed_img_model.setFixedWidth(200)
         row5c.addWidget(self.ed_img_model)
+        b_img_models = QPushButton("获取模型")
+        b_img_models.clicked.connect(self.fetch_img_models)
+        row5c.addWidget(b_img_models)
         v5.addLayout(row5c)
         tip5 = QLabel("默认用 Pollinations 免费接口（无需 Key，可能较慢）；"
                       "也可以切换成自己的 OpenAI 兼容接口。")
@@ -766,30 +928,57 @@ class SettingsPage(QWidget):
         self.ed_img_base.setText(get_setting("img_base_url", ""))
         self.ed_img_key.setText(get_setting("img_api_key", ""))
         self.ed_img_model.setText(get_setting("img_model", ""))
-        idxp = self.cb_img_provider.findData(get_setting("img_provider", "hf"))
+        cur = get_setting("img_provider", "hf")
+        idxp = next((i for i in range(self.cb_img_provider.count())
+                     if (self.cb_img_provider.itemData(i) or ("",))[0] == cur), 0)
         self.cb_img_provider.setCurrentIndex(max(0, idxp))
         self._sync_img_provider()
 
     def _sync_img_provider(self):
-        prov = self.cb_img_provider.currentData() or "hf"
+        data = self.cb_img_provider.currentData() or ("hf", "", "")
+        prov, preset_base, preset_model = data if isinstance(data, tuple) else (data, "", "")
         custom = prov == "custom"
         need = prov not in ("pollinations", "hf")
         for w in (getattr(self, "ed_img_key", None), getattr(self, "ed_img_model", None)):
             if w is not None:
                 w.setEnabled(need)
         if hasattr(self, "ed_img_base"):
-            self.ed_img_base.setEnabled(custom)
-            if prov == "zhipu":
-                self.ed_img_base.setText("https://open.bigmodel.cn/api/paas/v4")
-                if hasattr(self, "ed_img_model") and not self.ed_img_model.text().strip():
-                    self.ed_img_model.setText("cogview-3-flash")
-            elif prov == "doubao":
-                self.ed_img_base.setText("https://ark.cn-beijing.volces.com/api/v3")
-                if hasattr(self, "ed_img_model") and not self.ed_img_model.text().strip():
-                    self.ed_img_model.setText("doubao-seedream-3-0-t2i-250415")
-            self.ed_img_base.setPlaceholderText(
-                "如 https://dashscope.aliyuncs.com/api/v1 或 OpenAI 兼容地址" if custom
-                else "该渠道地址已内置，无需填写")
+            self.ed_img_base.setReadOnly(not custom)
+            self.ed_img_base.setEnabled(True if custom else True)
+            if custom:
+                self.ed_img_base.setPlaceholderText("如 https://api.openai.com/v1")
+            else:
+                self.ed_img_base.setText(preset_base)
+                self.ed_img_base.setPlaceholderText("该渠道地址已内置，无需填写")
+            if prov != "custom" and hasattr(self, "ed_img_model"):
+                self.ed_img_model.setText(preset_model)
+            self.ed_img_model.setReadOnly(False)
+            self.ed_img_model.setPlaceholderText("豆包填 ep-...；其他平台可保持默认")
+
+    def fetch_img_models(self):
+        base = self.ed_img_base.text().strip()
+        key = self.ed_img_key.text().strip()
+        if not base or not key:
+            QMessageBox.information(self, "提示", "先选生图渠道并填 Key，再获取模型。")
+            return
+        ids = common.list_models(base, key)
+        keys = ("seedream", "image", "flux", "dall", "cogview", "gpt-image")
+        ids = [i for i in ids if any(k in i.lower() for k in keys)] or ids
+        if not ids:
+            QMessageBox.information(self, "没有返回模型", "可直接点保存后生成，软件会在 404 时自动尝试可用模型。")
+            return
+        self.ed_img_model.setText(ids[0])
+        QMessageBox.information(self, "已获取模型", "已填入：" + ids[0] + f"\n共 {len(ids)} 个可用模型。")
+
+    def _preview_theme(self, name):
+        win = self.window()
+        if hasattr(win, "apply_theme"):
+            win.apply_theme(name)
+
+    def open_img_connect(self):
+        dlg = ImageConnectDialog(self)
+        if dlg.exec():
+            self.load_values()
 
     def open_ai_connect(self):
         try:
@@ -881,7 +1070,8 @@ class SettingsPage(QWidget):
         set_setting("backup_dir", self.ed_backup.text())
         set_setting("music_volume", str(self.sl_vol.value()))
         set_setting("loop_mode", "1" if self.chk_loop.isChecked() else "0")
-        prov = self.cb_img_provider.currentData() or "hf"
+        data = self.cb_img_provider.currentData() or ("hf", "", "")
+        prov = data[0] if isinstance(data, tuple) else (data or "hf")
         base = self.ed_img_base.text().strip()
         model = self.ed_img_model.text().strip()
         if prov == "zhipu":

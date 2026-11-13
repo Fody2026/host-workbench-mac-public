@@ -13,7 +13,7 @@ import tempfile
 import datetime
 
 APP_NAME = "主持人工作台"
-APP_VERSION = "4.8.2"
+APP_VERSION = "4.8.3"
 
 
 def base_dir() -> str:
@@ -79,8 +79,56 @@ DB_PATH = os.path.join(data_dir(), "host.db")
 
 class DB:
     def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH)
+        self.recovered = False
+        self.recovery_msg = ""
+        try:
+            self._open()
+        except Exception as exc:
+            # 数据库损坏/被占用时自动改名并从最近备份恢复，避免软件直接打不开
+            self.recovered = True
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            bad = DB_PATH + ".corrupt_" + stamp
+            try:
+                if getattr(self, "conn", None):
+                    self.conn.close()
+            except Exception:
+                pass
+            try:
+                if os.path.exists(DB_PATH):
+                    os.replace(DB_PATH, bad)
+            except Exception:
+                pass
+            restored = False
+            try:
+                import glob as _glob
+                folder = default_backup_dir()
+                zips = sorted(_glob.glob(os.path.join(folder, "主持人工作台数据_*.zip")),
+                              key=os.path.getmtime, reverse=True)
+                for z in zips[:3]:
+                    try:
+                        with zipfile.ZipFile(z) as zf:
+                            if "host.db" in zf.namelist():
+                                with zf.open("host.db") as src, open(DB_PATH, "wb") as dst:
+                                    shutil.copyfileobj(src, dst)
+                                restored = True
+                                break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                self._open()
+                self.recovery_msg = ("数据库损坏，已自动从最近备份恢复。" if restored
+                                     else "数据库损坏，已自动新建空数据库；原损坏文件保留为 " + os.path.basename(bad))
+            except Exception:
+                self.recovery_msg = "数据库无法打开：" + str(exc)
+                raise
+            logging.getLogger(__name__).warning(self.recovery_msg)
+
+    def _open(self):
+        self.conn = sqlite3.connect(DB_PATH, timeout=10)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout=8000")
         self.init_tables()
 
     def init_tables(self):
@@ -592,8 +640,68 @@ def _shared():
     return _shared_db_obj
 
 
+def total_ram_gb() -> float:
+    """返回物理内存 GB；用于低内存电脑的保护策略。"""
+    try:
+        import ctypes
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MS(); m.dwLength = ctypes.sizeof(MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return round(m.ullTotalPhys / 1024 ** 3, 1)
+    except Exception:
+        return 0.0
+
+
+def available_ram_gb() -> float:
+    try:
+        import ctypes
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MS(); m.dwLength = ctypes.sizeof(MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return round(m.ullAvailPhys / 1024 ** 3, 1)
+    except Exception:
+        return 0.0
+
+
+def list_models(base: str, key: str, timeout: int = 15) -> list:
+    """用当前 Key 查询平台可用模型（OpenAI 兼容 /models）。"""
+    try:
+        import requests
+        base = (base or "").rstrip("/")
+        if not base:
+            return []
+        if base.endswith("/chat/completions"):
+            base = base[:-len("/chat/completions")]
+        r = requests.get(base + "/models", headers={"Authorization": "Bearer " + key}, timeout=timeout)
+        if not r.ok:
+            return []
+        data = r.json()
+        items = data.get("data") or data.get("models") or []
+        ids = []
+        for it in items:
+            if isinstance(it, dict):
+                mid = it.get("id") or it.get("model") or it.get("name")
+                if mid:
+                    ids.append(str(mid))
+            elif isinstance(it, str):
+                ids.append(it)
+        return ids
+    except Exception:
+        return []
+
+
 def default_backup_dir() -> str:
-    """默认备份目录：Windows 为 D:\主持人工作台，macOS 为 ~/Documents/主持人工作台数据"""
+    """默认备份目录：Windows 为 D:\主持人工作台；macOS 为 ~/Documents/主持人工作台数据"""
     if sys.platform == "darwin":
         d = os.path.join(os.path.expanduser("~"), "Documents", "主持人工作台数据")
     else:
@@ -601,7 +709,7 @@ def default_backup_dir() -> str:
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
-        d = os.path.join(data_dir(), "backups")
+        d = os.path.join(os.path.expanduser("~"), "Documents", "主持人工作台数据")
         os.makedirs(d, exist_ok=True)
     return d
 
@@ -769,6 +877,10 @@ def import_all(zip_path: str) -> bool:
             # 兼容 4.8.1 之前的加密 .fhbackup（旧备份无密码）
             return import_backup(zip_path, "")
         with zipfile.ZipFile(zip_path) as z:
+            infos = z.infolist()
+            # 防止超大包/zip 炸弹写满磁盘
+            if len(infos) > 20000 or sum(i.file_size for i in infos) > 1024 ** 3:
+                return False
             names = z.namelist()
             if "host.db" not in names and "manifest.json" not in names:
                 return False
@@ -809,14 +921,16 @@ def _prune_auto_backups(folder: str, keep: int = AUTO_KEEP):
         pass
 
 
-def auto_backup_if_due(force: bool = False) -> str:
+def auto_backup_if_due(force: bool = False, db=None) -> str:
     """距上次自动备份 >=24 小时则导出一次，保留最新 3 份；返回新文件或空串。"""
-    folder = get_setting("backup_dir", "") or default_backup_dir()
+    gs = (db.get_setting if db is not None else get_setting)
+    ss = (db.set_setting if db is not None else set_setting)
+    folder = gs("backup_dir", "") or default_backup_dir()
     try:
         os.makedirs(folder, exist_ok=True)
     except Exception:
         folder = default_backup_dir()
-    last = get_setting("auto_backup_last", "")
+    last = gs("auto_backup_last", "")
     now = datetime.datetime.now()
     if not force and last:
         try:
@@ -829,7 +943,7 @@ def auto_backup_if_due(force: bool = False) -> str:
     out = os.path.join(folder, name)
     try:
         export_all(out)
-        set_setting("auto_backup_last", now.isoformat(timespec="seconds"))
+        ss("auto_backup_last", now.isoformat(timespec="seconds"))
         _prune_auto_backups(folder, AUTO_KEEP)
         return out
     except Exception:

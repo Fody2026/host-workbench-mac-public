@@ -100,7 +100,9 @@ def build_qss(base_qss: str, name: str = None, set_current: bool = True) -> str:
     """把基础样式表里的固定色替换成目标主题色"""
     global _current
     name = name or _current
-    t = THEMES.get(name, THEMES["暗夜金"])
+    if name not in THEMES:
+        name = "暗夜金"
+    t = THEMES[name]
     if set_current:
         _current = name
     qss = base_qss

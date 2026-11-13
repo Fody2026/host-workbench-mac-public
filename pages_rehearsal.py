@@ -195,13 +195,8 @@ class SandboxCanvas(QWidget):
                            Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             pm = sm.scaled(pm.width(), pm.height(), Qt.IgnoreAspectRatio,
                            Qt.SmoothTransformation)
-        # 铺满画布
-        sc = max(SCENE_W / pm.width(), SCENE_H / pm.height())
-        full = pm.scaled(int(pm.width() * sc) + 1, int(pm.height() * sc) + 1,
-                         Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        x = max(0, (full.width() - SCENE_W) // 2)
-        y = max(0, int((full.height() - SCENE_H) * self.bg_anchor))
-        self._bg = full.copy(x, y, SCENE_W, SCENE_H)
+        # 强制拉伸铺满画布，不再上下裁切/拖动
+        self._bg = pm.scaled(SCENE_W, SCENE_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         self._backdrop = self._bg.scaled(40, 30, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
     def set_look(self, blur=None, dim=None, anchor=None):
@@ -362,10 +357,8 @@ class SandboxCanvas(QWidget):
     # ---------- 绘制 ----------
     def _target_rect(self):
         m = 10
-        aw, ah = max(1, self.width() - 2 * m), max(1, self.height() - 2 * m)
-        sc = min(aw / SCENE_W, ah / SCENE_H)
-        w, h = SCENE_W * sc, SCENE_H * sc
-        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+        # 直接铺满整个窗口，不再按比例留黑边/上下留白
+        return QRectF(0, 0, max(1, self.width()), max(1, self.height()))
 
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -890,12 +883,6 @@ class RehearsalPage(QWidget):
         self.sl_blur.setValue(0)
         self.sl_blur.valueChanged.connect(self._on_look)
         g.addWidget(self.sl_blur, 0, 1)
-        g.addWidget(QLabel("上下"), 1, 0)
-        self.sl_anchor = QSlider(Qt.Horizontal)
-        self.sl_anchor.setRange(0, 100)
-        self.sl_anchor.setValue(34)
-        self.sl_anchor.valueChanged.connect(self._on_look)
-        g.addWidget(self.sl_anchor, 1, 1)
         v.addLayout(g)
         self.chk_grid = QCheckBox("显示网格")
         self.chk_grid.toggled.connect(self._on_grid)
@@ -1348,12 +1335,10 @@ class RehearsalPage(QWidget):
                 break
 
     def _on_look(self, *_):
-        self.canvas.set_look(blur=self.sl_blur.value() / 10.0,
-                            anchor=self.sl_anchor.value() / 100.0)
+        self.canvas.set_look(blur=self.sl_blur.value() / 10.0)
 
     def _reset_look(self):
         self.sl_blur.setValue(0)
-        self.sl_anchor.setValue(34)
         self._on_look()
         self.chk_grid.setChecked(False)
 
@@ -1567,7 +1552,6 @@ class RehearsalPage(QWidget):
         self.canvas.sel = -1
         look = d.get("look", {})
         self.sl_blur.setValue(int(float(look.get("blur", 0.0)) * 10))
-        self.sl_anchor.setValue(int(float(look.get("anchor", 0.34)) * 100))
         self.canvas.set_hall(d.get("hall", "hall1"))
         self._on_look()
         self.sp_phases.blockSignals(True)

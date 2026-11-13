@@ -344,19 +344,45 @@ def _chat(base, key, model, prompt, system=None, timeout=180, images=None):
         messages.append({"role": "user", "content": prompt})
     import requests
     base = (base or "").rstrip("/")
-    if base.endswith("/v1"):
+    if base.endswith("/chat/completions"):
+        url = base
+    elif base.endswith("/v1") or base.endswith("/v4") or base.endswith("/api/v3"):
         url = base + "/chat/completions"
     else:
         url = base + "/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = "Bearer " + key
-    r = requests.post(url, headers=headers, json={
-        "model": model or "deepseek-chat",
-        "messages": messages,
-        "temperature": 0.75,
-        "stream": False,
-    }, timeout=timeout)
+    def _post(mid):
+        return requests.post(url, headers=headers, json={
+            "model": mid,
+            "messages": messages,
+            "temperature": 0.75,
+            "stream": False,
+        }, timeout=timeout)
+    r = _post(model or "deepseek-chat")
+    # 404 多为模型 ID 下线/没开通：自动用当前 Key 拉模型列表并换一个可用模型重试
+    if r.status_code == 404:
+        try:
+            ids = common.list_models(base, key)
+        except Exception:
+            ids = []
+        bad = ("embedding", "tts", "asr", "vision", "image", "seedream", "video", "rerank")
+        cands = [i for i in ids if not any(b in i.lower() for b in bad)]
+        for mid in cands[:8]:
+            if mid == model:
+                continue
+            rr = _post(mid)
+            if rr.status_code < 400:
+                r = rr
+                break
+    if r.status_code == 404 and "volces.com" in url:
+        detail = (r.text or "")[:300].replace("\n", " ")
+        raise RuntimeError("火山方舟 404：地址正确，但平台拒绝了模型。通常是该模型未开通/已下线。"
+                           f"\n服务端返回：{detail}"
+                           "\n请到方舟控制台开通该模型，或换一个已开通的模型；软件无法替账号开通/付费。")
+    if r.status_code == 401:
+        raise RuntimeError("API Key 无效或没有该模型权限（401）。")
     r.raise_for_status()
     data = r.json()
     return data["choices"][0]["message"]["content"]
@@ -366,8 +392,8 @@ class AIWorker(QThread):
     ok = Signal(str)
     err = Signal(str)
 
-    def __init__(self, base, key, model, prompt, system=None, images=None):
-        super().__init__()
+    def __init__(self, base, key, model, prompt, system=None, images=None, parent=None):
+        super().__init__(parent)
         self.base, self.key, self.model = base, key, model
         self.prompt, self.system = prompt, system
         self.images = images or []
@@ -378,6 +404,19 @@ class AIWorker(QThread):
                               self.system, images=self.images))
         except Exception as e:
             self.err.emit(str(e))
+
+
+AI_PRESETS = [
+    ("DeepSeek 官方", "https://api.deepseek.com", "deepseek-chat"),
+    ("阿里云百炼（通义千问）", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+    ("智谱 BigModel（GLM）", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
+    ("月之暗面 Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
+    ("硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3"),
+    ("火山方舟（豆包）", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-pro-260915"),
+    ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+    ("本地 Ollama", "http://127.0.0.1:11434/v1", "deepseek-r1:14b"),
+    ("自定义 OpenAI 兼容", "", ""),
+]
 
 
 class ConnectDialog(QDialog):
@@ -392,7 +431,7 @@ class ConnectDialog(QDialog):
         lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(10)
 
-        tip = QLabel("直连 DeepSeek 或本机模型；本机扫描到的 Key 只保存在本机数据库。")
+        tip = QLabel("选平台后地址和模型会自动填好，通常只需要填 Key。火山方舟请先在控制台开通模型；模型 ID 可改成当前可用的，如 doubao-seed-2-1-pro-260915。")
         tip.setObjectName("SubTitle")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -401,12 +440,14 @@ class ConnectDialog(QDialog):
         g.setHorizontalSpacing(10)
         g.setVerticalSpacing(8)
         self.cb_provider = QComboBox()
-        self.cb_provider.addItems(["DeepSeek 官方 API", "本地模型（Ollama / vLLM）", "自定义 OpenAI 兼容接口"])
+        for label, base, model in AI_PRESETS:
+            self.cb_provider.addItem(label, (base, model))
         self.cb_provider.currentIndexChanged.connect(self._on_provider)
-        g.addWidget(QLabel("接入方式"), 0, 0)
+        g.addWidget(QLabel("API 平台（已内置地址）"), 0, 0)
         g.addWidget(self.cb_provider, 0, 1, 1, 2)
         self.ed_base = QLineEdit()
-        self.ed_base.setPlaceholderText("https://api.deepseek.com")
+        self.ed_base.setReadOnly(True)
+        self.ed_base.setPlaceholderText("选择平台后自动填入")
         g.addWidget(QLabel("接口地址"), 1, 0)
         g.addWidget(self.ed_base, 1, 1, 1, 2)
         self.ed_key = QLineEdit()
@@ -416,7 +457,6 @@ class ConnectDialog(QDialog):
         g.addWidget(self.ed_key, 2, 1, 1, 2)
         self.cb_model = QComboBox()
         self.cb_model.setEditable(True)
-        self.cb_model.addItems(["deepseek-chat", "deepseek-reasoner", "deepseek-flash", "deepseek-r1:14b"])
         g.addWidget(QLabel("模型"), 3, 0)
         g.addWidget(self.cb_model, 3, 1, 1, 2)
         lay.addLayout(g)
@@ -426,7 +466,10 @@ class ConnectDialog(QDialog):
         b_scan.clicked.connect(self.scan)
         b_test = QPushButton("测试连接")
         b_test.clicked.connect(self.test)
+        b_models = QPushButton("获取可用模型")
+        b_models.clicked.connect(self.fetch_models)
         row.addWidget(b_scan)
+        row.addWidget(b_models)
         row.addWidget(b_test)
         row.addStretch()
         lay.addLayout(row)
@@ -451,23 +494,50 @@ class ConnectDialog(QDialog):
 
     def _load(self):
         prov = self.db.get_setting("ai_provider", "deepseek")
-        self.cb_provider.setCurrentIndex({"deepseek": 0, "local": 1, "custom": 2}.get(prov, 0))
         base = self.db.get_setting("ai_base_url", "")
-        if not base and prov == "deepseek":
-            base = "https://api.deepseek.com"
+        saved_model = self.db.get_setting("ai_model", "deepseek-chat")
+        idx = self.db.get_setting("ai_preset_index", "")
+        try:
+            idx = int(idx)
+        except Exception:
+            idx = -1
+        if not (0 <= idx < len(AI_PRESETS)):
+            idx = 0
+            for i, (label, b, m) in enumerate(AI_PRESETS):
+                if b and base and base.rstrip("/") == b.rstrip("/"):
+                    idx = i
+                    break
+            if prov == "local":
+                idx = next((i for i, p in enumerate(AI_PRESETS) if p[0] == "本地 Ollama"), 0)
+            elif prov == "custom" or not base:
+                idx = len(AI_PRESETS) - 1
+        self.cb_provider.setCurrentIndex(idx)
         self.ed_base.setText(base)
         self.ed_key.setText(self.db.get_setting("ai_api_key", ""))
-        self.cb_model.setCurrentText(self.db.get_setting("ai_model", "deepseek-chat"))
+        if "火山" in self.cb_provider.currentText() and (not saved_model or saved_model.startswith("ep-") or "1-5-pro" in saved_model):
+            saved_model = "doubao-seed-2-1-pro-260915"
+            self.db.set_setting("ai_model", saved_model)
+        if saved_model:
+            self.cb_model.clear(); self.cb_model.addItem(saved_model)
+        self._on_provider(idx, keep_values=True)
 
-    def _on_provider(self, idx):
-        if idx == 0:
-            self.ed_base.setText("https://api.deepseek.com")
-            if self.cb_model.findText("deepseek-chat") >= 0:
-                self.cb_model.setCurrentText("deepseek-chat")
-        elif idx == 1:
-            self.ed_base.setText("http://127.0.0.1:11434/v1")
-            if self.cb_model.findText("deepseek-r1:14b") >= 0:
-                self.cb_model.setCurrentText("deepseek-r1:14b")
+    def _on_provider(self, idx, keep_values=False):
+        if idx < 0 or idx >= len(AI_PRESETS):
+            return
+        label, base, model = AI_PRESETS[idx]
+        custom = (label == "自定义 OpenAI 兼容")
+        self.ed_base.setReadOnly(not custom)
+        if custom:
+            if not keep_values:
+                self.ed_base.clear()
+            self.cb_model.setEditable(True)
+            if not keep_values:
+                self.cb_model.clear()
+            return
+        if base:
+            self.ed_base.setText(base)
+        self.cb_model.setEditable(True)
+        self.cb_model.clear(); self.cb_model.addItem(model)
 
     def scan(self):
         keys = _scan_api_keys()
@@ -488,7 +558,34 @@ class ConnectDialog(QDialog):
             parts.append(f"发现本地模型：{models[0][0]}")
         self.msg.setText("；".join(parts))
 
+    def fetch_models(self):
+        base = self.ed_base.text().strip()
+        key = self.ed_key.text().strip()
+        if not base or not key:
+            self.msg.setText("先选平台、填 Key，再点获取模型。")
+            return
+        self.msg.setText("正在用 Key 查询可用模型…")
+        QApplication.processEvents()
+        ids = common.list_models(base, key)
+        if not ids:
+            self.msg.setText("平台没有返回模型列表；可直接点“测试连接”，软件会自动尝试可用模型。")
+            return
+        cur = self.cb_model.currentText().strip()
+        self.cb_model.clear(); self.cb_model.addItems(ids)
+        if cur in ids:
+            self.cb_model.setCurrentText(cur)
+        # 直接弹选择框，避免下拉框被样式遮住导致“选不了”
+        from PySide6.QtWidgets import QInputDialog
+        pick, ok = QInputDialog.getItem(self, "选择模型", "这个 Key 可用的模型：", ids, 0, False)
+        if ok and pick:
+            self.cb_model.setCurrentText(pick)
+        self.msg.setText(f"已获取 {len(ids)} 个模型，已选：{self.cb_model.currentText()}")
+
     def test(self):
+        model_now = self.cb_model.currentText().strip()
+        if not model_now or "xxxx" in model_now:
+            self.msg.setText("请先把模型改成真实值；火山方舟可用 doubao-seed-2-1-pro-260915，并确认已开通。")
+            return
         base = self.ed_base.text().strip()
         if not base:
             self.msg.setText("请先填写接口地址")
@@ -504,11 +601,13 @@ class ConnectDialog(QDialog):
 
     def _save(self):
         idx = self.cb_provider.currentIndex()
-        prov = "deepseek" if idx == 0 else ("local" if idx == 1 else "custom")
+        label = AI_PRESETS[idx][0] if 0 <= idx < len(AI_PRESETS) else "自定义 OpenAI 兼容"
+        prov = "deepseek" if label.startswith("DeepSeek") else ("local" if "Ollama" in label else "custom")
         base = self.ed_base.text().strip()
-        if idx == 0 and not base:
+        if label.startswith("DeepSeek") and not base:
             base = "https://api.deepseek.com"
         self.db.set_setting("ai_provider", prov)
+        self.db.set_setting("ai_preset_index", str(idx))
         self.db.set_setting("ai_base_url", base)
         self.db.set_setting("ai_api_key", self.ed_key.text().strip())
         self.db.set_setting("ai_model", self.cb_model.currentText().strip())
@@ -582,11 +681,15 @@ class AIWriterPage(QWidget):
         self._last_reply = ""
         self.history = []
         self._images = []
+        self._q_text = ""
+        self._q_name = ""
         _ensure_style_dir()
         self._build()
         self._refresh_docs()
         self._refresh_status()
-        self._refresh_questionnaires()
+        # 每次启动/新对话的第一条回复固定先问称呼；用户答完记住
+        self._await_name = True
+        QTimer.singleShot(120, lambda: self._append_chat("a", "好呀，请问我该怎么称呼您？"))
 
     # ---------- 界面 ----------
     def _build(self):
@@ -627,17 +730,16 @@ class AIWriterPage(QWidget):
 
         qrow = QHBoxLayout()
         qrow.setSpacing(8)
-        qrow.addWidget(QLabel("客户问卷"))
-        self.cb_questionnaire = QComboBox()
-        self.cb_questionnaire.setMinimumWidth(320)
-        self.cb_questionnaire.activated.connect(self._on_questionnaire_changed)
-        qrow.addWidget(self.cb_questionnaire, 1)
-        self.lb_questionnaire = QLabel("未选择（可选）")
+        b_qup = QPushButton("上传客户问卷")
+        b_qup.setToolTip("直接上传客户填好的问卷（Word/PDF/Excel/图片），AI 会自动读取内容写词")
+        b_qup.clicked.connect(self.upload_questionnaire)
+        qrow.addWidget(b_qup)
+        self.lb_questionnaire = QLabel("未上传问卷")
         self.lb_questionnaire.setObjectName("SubTitle")
-        qrow.addWidget(self.lb_questionnaire)
-        b_qrefresh = QPushButton("刷新")
-        b_qrefresh.clicked.connect(self._refresh_questionnaires)
-        qrow.addWidget(b_qrefresh)
+        qrow.addWidget(self.lb_questionnaire, 1)
+        b_qclear = QPushButton("清除")
+        b_qclear.clicked.connect(self.clear_questionnaire)
+        qrow.addWidget(b_qclear)
         lay.addLayout(qrow)
 
         left = make_card()
@@ -852,78 +954,46 @@ class AIWriterPage(QWidget):
                 break
         return "\n\n".join(chunks)
 
-    def _refresh_questionnaires(self):
-        if not hasattr(self, "cb_questionnaire"):
+    def upload_questionnaire(self):
+        import docio
+        path, _ = QFileDialog.getOpenFileName(
+            self, "上传客户问卷", "",
+            docio.FILE_FILTER)
+        if not path:
             return
-        cur = self.cb_questionnaire.currentData()
-        self.cb_questionnaire.blockSignals(True)
-        self.cb_questionnaire.clear()
-        self.cb_questionnaire.addItem("不使用问卷", 0)
         try:
-            rows = self.db.questionnaires()
-        except Exception:
-            rows = []
-        for q in rows:
-            label = f"{q.get('wedding_date','')} · {q.get('couple','')}"
-            self.cb_questionnaire.addItem(label, q["id"])
-        idx = self.cb_questionnaire.findData(cur)
-        self.cb_questionnaire.setCurrentIndex(idx if idx >= 0 else 0)
-        self.cb_questionnaire.blockSignals(False)
-        self._on_questionnaire_changed()
+            text = _read_doc_text(path)
+        except Exception as e:
+            QMessageBox.warning(self, "读取失败", f"无法读取问卷：{e}")
+            return
+        if not text.strip():
+            QMessageBox.warning(self, "没有文字", "这个文件里没有可读取的文字；如果是扫描件，请上传图片或在问卷里手动补充。")
+            return
+        self._q_text = text.strip()
+        self._q_name = os.path.basename(path)
+        self.lb_questionnaire.setText(f"已上传：{self._q_name}（{len(self._q_text)} 字）")
+        self.lb_questionnaire.setStyleSheet("")
+        self._fill_input("已读取客户问卷，请根据问卷信息帮我写主持词。")
 
-    def _on_questionnaire_changed(self, *_):
-        qid = self.cb_questionnaire.currentData() if hasattr(self, "cb_questionnaire") else 0
-        if not qid:
-            self.lb_questionnaire.setText("未选择（可选）")
-            return
-        try:
-            q = self.db.questionnaire(qid)
-            n = len(self.db.questionnaire_submissions(qid))
-        except Exception:
-            q, n = None, 0
-        self.lb_questionnaire.setText(f"已选：{q.get('couple','')} · {n} 份提交" if q else "未选择")
+    def clear_questionnaire(self):
+        self._q_text = ""
+        self._q_name = ""
+        self.lb_questionnaire.setText("未上传问卷")
 
     def _questionnaire_context(self):
-        qid = self.cb_questionnaire.currentData() if hasattr(self, "cb_questionnaire") else 0
-        if not qid:
+        if not getattr(self, "_q_text", ""):
             return ""
-        try:
-            q = self.db.questionnaire(qid)
-            subs = self.db.questionnaire_submissions(qid)
-        except Exception:
-            return ""
-        if not q:
-            return ""
-        lines = [f"【已选客户问卷】{q.get('couple','')} · {q.get('wedding_date','')} · {q.get('venue','')}"]
-        if not subs:
-            lines.append("目前还没有客户提交记录；请基于问卷结构提问，不要虚构答案。")
-            if q.get("template_text"):
-                lines.append("问卷结构：\n" + q.get("template_text", "")[:2000])
-            return "\n".join(lines)
-        for i, s in enumerate(subs[:5], 1):
-            try:
-                ans = json.loads(s.get("answers_json") or "{}")
-            except Exception:
-                ans = {}
-            parts = [f"{k}：{v}" for k, v in ans.items() if str(v).strip()]
-            lines.append(f"提交{i}（{s.get('created','')}）：\n" + "\n".join(parts)[:3000])
-        if len(subs) > 5:
-            lines.append(f"（另有 {len(subs)-5} 份提交未展开）")
-        return "\n".join(lines)
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        self._refresh_questionnaires()
+        return "【客户问卷（已上传）】\n" + self._q_text[:12000] + "\n"
 
     def _system_prompt(self):
         lines = [
-            "你是婚礼主持人鹏飞的写作搭档，帮他写婚礼台词、创意环节、改稿和想说法。",
+            f"你是专业婚礼主持人的写作搭档，服务对象是{self.db.get_setting('user_name','这位主持人')}。",
             "回复要求：直接用中文给他能上口的文本；不要解释你在做什么，不要输出模板或套话说明；"
             "台词按环节分段、可直接朗读；创意给能落地的做法；信息不够时先问一个最关键的问题。",
         ]
         style = self._style_text()
         if style:
-            lines.append("\n【鹏飞的写词习惯 / 范文（来自他上传的文档，请严格模仿其句式、用词与节奏）】\n"
+            lines.append("\n【主持人的写词习惯 / 范文（来自上传的文档，请严格模仿其句式、用词与节奏）】\n"
                          + style)
         qctx = self._questionnaire_context()
         if qctx:
@@ -937,10 +1007,27 @@ class AIWriterPage(QWidget):
         lines.append("用户：" + text)
         return "\n".join(lines)
 
+    def _extract_name(self, text):
+        import re as _re
+        t = (text or "").strip()
+        for pat in (r"我叫([^\s，。！？,.!?]{1,12})", r"我是([^\s，。！？,.!?]{1,12})",
+                    r"叫我([^\s，。！？,.!?]{1,12})", r"称呼我([^\s，。！？,.!?]{1,12})"):
+            m = _re.search(pat, t)
+            if m:
+                return m.group(1).strip()
+        if 1 <= len(t) <= 8 and not any(c in t for c in "，。！？,.!? "):
+            return t
+        return ""
+
     def send_chat(self):
         if self._busy:
             return
         text = self.ed_input.toPlainText().strip()
+        if getattr(self, "_await_name", False) and text:
+            name = self._extract_name(text)
+            if name:
+                self.db.set_setting("user_name", name)
+                self._await_name = False
         images = [im["b64"] for im in getattr(self, "_images", [])]
         if not text and not images:
             return
@@ -959,7 +1046,7 @@ class AIWriterPage(QWidget):
         self._last_had_image = bool(images)
         self._set_busy(True)
         self.status.setText("正在识图并回复…" if images else "正在等模型回复…")
-        self.worker = AIWorker(base, key, model, prompt, self._system_prompt(), images=images)
+        self.worker = AIWorker(base, key, model, prompt, self._system_prompt(), images=images, parent=self)
         self.worker.ok.connect(self._on_ok)
         self.worker.err.connect(self._on_err)
         self.worker.start()
@@ -1137,21 +1224,24 @@ class AIWriterPage(QWidget):
             self, "上传图片", "", "图片 (*.png *.jpg *.jpeg *.bmp *.webp)")
         if not files:
             return
-        from PIL import Image
+        from PIL import Image, ImageQt
         import base64
         import io as _io
+        low = self.db.get_setting("low_memory", "0") == "1"
+        if low:
+            files = files[:3]
         added = 0
         for path in files:
             try:
                 im = Image.open(path).convert("RGB")
-                im.thumbnail((1440, 1440))
+                im.thumbnail((1024, 1024) if low else (1440, 1440))
                 buf = _io.BytesIO()
-                im.save(buf, "JPEG", quality=88)
+                im.save(buf, "JPEG", quality=80 if low else 88)
                 raw = buf.getvalue()
                 b64 = base64.b64encode(raw).decode("ascii")
-                thumb = QPixmap.fromImage(
-                    QPixmap(path).toImage().scaled(52, 52, Qt.KeepAspectRatioByExpanding,
-                                                   Qt.SmoothTransformation))
+                th = im.copy()
+                th.thumbnail((52, 52))
+                thumb = QPixmap.fromImage(ImageQt(th))
                 self._images.append({"name": os.path.basename(path), "b64": b64,
                                      "thumb": thumb})
                 added += 1

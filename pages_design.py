@@ -8,7 +8,7 @@ import logging
 import subprocess
 import time
 
-from PySide6.QtCore import Qt, QRectF, QSize, QPointF
+from PySide6.QtCore import Qt, QRectF, QSize, QPointF, QThread, Signal
 from PySide6.QtGui import (QPainter, QPen, QBrush, QColor, QPixmap, QImage, QFont,
                            QPolygonF, QRadialGradient, QLinearGradient, QIcon,
                            QPainterPath, QTextOption)
@@ -239,6 +239,104 @@ class ImgApiDialog(QDialog):
 # ============================================================
 #  图文设计页
 # ============================================================
+class ImageFetchWorker(QThread):
+    """把生图的网络/子进程请求放到后台，避免界面冻结。"""
+    done = Signal(bytes, str)
+    failed = Signal(str)
+
+    def __init__(self, provider, en_prompt, theme_text, style_cn, style_en, w, h,
+                 base="", key="", model="", parent=None):
+        super().__init__(parent)
+        self.provider = provider; self.en_prompt = en_prompt
+        self.theme_text = theme_text; self.style_cn = style_cn; self.style_en = style_en
+        self.w = w; self.h = h; self.base = base; self.key = key; self.model = model
+
+    def run(self):
+        try:
+            import requests
+            from urllib.parse import quote
+            if self.provider in ("hf", "pollinations"):
+                prompt = self.en_prompt
+                seed = random.randint(1, 999999)
+                models = ("flux",) if self.provider == "hf" else ("flux", "turbo")
+                last = None
+                for mdl in models:
+                    url = ("https://image.pollinations.ai/prompt/" + quote(prompt) +
+                           f"?width={self.w}&height={self.h}&nologo=true&model={mdl}&seed={seed}")
+                    try:
+                        r = requests.get(url, timeout=90, headers={"User-Agent": "HostWorkbench/4.8.3"})
+                        if r.ok and len(r.content) > 1000:
+                            self.done.emit(r.content, self.provider); return
+                        last = RuntimeError(f"HTTP {r.status_code}")
+                    except Exception as e:
+                        last = e
+                raise RuntimeError(f"免费接口没有返回图片（{last}）")
+            if self.provider == "local":
+                if common.get_setting("low_memory", "0") == "1" or (0 < common.available_ram_gb() < 6):
+                    raise RuntimeError("本机可用内存不足，已阻止本地 SDXL（容易把软件/系统拖崩）；请改用 FLUX/Pollinations 免费接口。")
+                model_path = common.get_setting("sdxl_model", r"D:\ComfyUI\models\checkpoints\sd_xl_base_1.0.safetensors")
+                py_path = common.get_setting("sdxl_python", r"D:\Python311\python.exe")
+                script = common.get_setting("sdxl_script", r"D:\SDXL\gen_once.py")
+                if not (os.path.exists(model_path) and os.path.exists(py_path) and os.path.exists(script)):
+                    raise RuntimeError("未检测到本地 SDXL，请确认模型、Python 与 gen_once.py 已部署")
+                out = os.path.join(common.data_dir(), "sdxl_design_tmp.png")
+                prompt = (self.theme_text or "婚礼") + f"，{self.style_cn}，婚礼海报背景，高级留白，细腻光影，无人物，无文字，无水印"
+                proc = subprocess.run([py_path, script, "--prompt", prompt, "--out", out,
+                                       "--steps", "8", "--size", "1024"],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      timeout=1800,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if proc.returncode != 0 or not os.path.exists(out):
+                    raise RuntimeError("本地生成失败：" + ((proc.stderr or b"").decode("utf-8", "ignore")[-300:] or f"退出码 {proc.returncode}"))
+                with open(out, "rb") as f:
+                    self.done.emit(f.read(), "local")
+                return
+            # 自定义 OpenAI 兼容生图接口
+            prompt = (self.theme_text or "婚礼") + f"，{self.style_cn}，婚礼海报背景，高级留白，细腻光影，无人物，无文字，无水印，高清"
+            url = self.base.rstrip("/")
+            if not url.endswith("/images/generations"):
+                url += "/images/generations"
+            def _post(mid):
+                return requests.post(url, headers={"Content-Type": "application/json",
+                                                   "Authorization": "Bearer " + self.key},
+                                     json={"model": mid, "prompt": prompt, "n": 1,
+                                           "size": "1024x1024", "response_format": "url"}, timeout=120)
+            r = _post(self.model)
+            if r.status_code == 404:
+                ids = common.list_models(self.base, self.key)
+                keys = ("seedream", "image", "flux", "dall", "cogview", "gpt-image")
+                cands = [i for i in ids if any(k in i.lower() for k in keys)]
+                if ids and not cands:
+                    raise RuntimeError(f"这个 Key 返回了 {len(ids)} 个模型，但没有生图模型。"
+                                       "请先在平台控制台开通 Seedream/FLUX 生图权限，再点“获取模型”。")
+                for mid in cands[:6]:
+                    if mid == self.model:
+                        continue
+                    rr = _post(mid)
+                    if rr.status_code < 400:
+                        r = rr
+                        break
+            if r.status_code == 404 and "volces.com" in url:
+                detail = (r.text or "")[:300].replace("\n", " ")
+                raise RuntimeError("火山方舟生图 404：地址正确，但平台拒绝了模型。通常是该模型未开通/已下线。"
+                                   f"\n服务端返回：{detail}"
+                                   "\n请到方舟控制台开通 Seedream，或换一个已开通的生图模型。")
+            if r.status_code == 401:
+                raise RuntimeError("生图 API Key 无效或没有该模型权限（401）。")
+            r.raise_for_status()
+            item = (r.json().get("data") or [{}])[0]
+            if item.get("b64_json"):
+                import base64
+                data = base64.b64decode(item["b64_json"])
+            elif item.get("url"):
+                r2 = requests.get(item["url"], timeout=90); r2.raise_for_status(); data = r2.content
+            else:
+                raise RuntimeError("返回里没有可用的图片数据")
+            self.done.emit(data, self.provider)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class DesignPage(QWidget):
     def __init__(self, db=None, parent=None):
         super().__init__(parent)
@@ -888,7 +986,8 @@ class DesignPage(QWidget):
     def open_img_api(self):
         if not self.db:
             return
-        dlg = ImgApiDialog(self.db, self)
+        from pages_media import ImageConnectDialog
+        dlg = ImageConnectDialog(self)
         if dlg.exec():
             self.refresh_img_label()
 
@@ -918,157 +1017,74 @@ class DesignPage(QWidget):
                      ", soft cinematic light, elegant fine art photography, "
                      "large clean negative space at the top for text, "
                      "no people, no text, no watermark, ultra detailed, 8k")
-        self.btn_gen.setEnabled(False)
-        self.btn_gen.setText("生成中…")
-        QApplication.processEvents()
+        base = key = model = ""
+        if provider == "zhipu":
+            base = "https://open.bigmodel.cn/api/paas/v4"; model = "cogview-3-flash"
+            key = self.db.get_setting("img_api_key", "") if self.db else ""
+        elif provider == "doubao":
+            base = "https://ark.cn-beijing.volces.com/api/v3"; model = "doubao-seedream-3-0-t2i-250415"
+            key = self.db.get_setting("img_api_key", "") if self.db else ""
+        elif provider in ("custom", "siliconflow", "openai"):
+            base = (self.db.get_setting("img_base_url", "") if self.db else "") or {
+                "siliconflow": "https://api.siliconflow.cn/v1",
+                "openai": "https://api.openai.com/v1"}.get(provider, "")
+            key = self.db.get_setting("img_api_key", "") if self.db else ""
+            model = (self.db.get_setting("img_model", "") if self.db else "") or {
+                "siliconflow": "black-forest-labs/FLUX.1-schnell",
+                "openai": "gpt-image-1"}.get(provider, "qwen-image")
+        if provider in ("zhipu", "doubao", "custom", "siliconflow", "openai"):
+            if not key:
+                QMessageBox.information(self, "还需要 Key",
+                    "该渠道需要 API Key，请在「生图 API…」里填写；不想填 Key 可直接用免费的 FLUX/Pollinations。")
+                return
+            if not base:
+                QMessageBox.information(self, "未配置接口", "请填写接口地址、Key 与模型。")
+                return
+        if provider in ("hf", "pollinations"):
+            if self.canvas_h >= self.canvas_w:
+                w = 768; h = max(640, min(1152, int(768 * self.canvas_h / max(1, self.canvas_w))))
+            else:
+                h = 768; w = max(640, min(1152, int(768 * self.canvas_w / max(1, self.canvas_h))))
+        else:
+            w = h = 1024
+        self.btn_gen.setEnabled(False); self.btn_gen.setText("生成中…")
+        self._fetch_msg = {"hf": "已用 FLUX.1-schnell 免费接口生成并铺为背景。",
+                           "pollinations": "已用 Pollinations 免费接口生成并铺为背景。",
+                           "local": "已用本地 SDXL 生成并铺为背景。",
+                           "zhipu": "已用智谱 CogView 生成并铺为背景。",
+                           "doubao": "已用豆包 Seedream 生成并铺为背景。",
+                           "custom": "已用自定义接口生成并铺为背景。"}.get(provider, "已生成并铺为背景。")
+        self.worker = ImageFetchWorker(provider, en_prompt, theme_text, style_cn, style_en,
+                                       w, h, base, key, model, parent=self)
+        self.worker.done.connect(self._on_image_ready)
+        self.worker.failed.connect(self._on_image_failed)
+        self.worker.start()
+
+    def _on_image_ready(self, data, provider):
         try:
-            import requests
             pm = QPixmap()
-            if provider == "hf":
-                if self.canvas_h >= self.canvas_w:
-                    w = 768
-                    h = max(640, min(1152, int(768 * self.canvas_h / max(1, self.canvas_w))))
-                else:
-                    h = 768
-                    w = max(640, min(1152, int(768 * self.canvas_w / max(1, self.canvas_h))))
-                data = self._gen_hf_flux(en_prompt, w, h)
-                pm.loadFromData(data)
-                if pm.isNull():
-                    from PIL import Image
-                    import io as _io
-                    pm = QPixmap.fromImage(QImage.fromData(data, "WEBP"))
-                if pm.isNull():
-                    raise RuntimeError("FLUX 返回的图片无法读取")
-                self.base.setPixmap(cover_pixmap(pm, self.canvas_w, self.canvas_h))
-                QMessageBox.information(
-                    self, "生图完成",
-                    "已用 FLUX.1-schnell（免费）生成并铺为画布背景；"
-                    "不满意可以换「风格」或再生成一次。")
-            elif provider == "pollinations":
-                from urllib.parse import quote
-                w = 1024
-                h = int(1024 * self.canvas_h / max(1, self.canvas_w))
-                h = max(512, min(1792, h))
-                seed = random.randint(1, 999999)
-                data = None
-                last_err = None
-                for model in ("flux", "turbo"):
-                    url = ("https://image.pollinations.ai/prompt/" + quote(en_prompt) +
-                           f"?width={w}&height={h}&nologo=true&model={model}&seed={seed}")
-                    try:
-                        r = requests.get(url, timeout=55,
-                                         headers={"User-Agent": "HostWorkbench/3.5"})
-                        if r.ok and len(r.content) > 1000:
-                            data = r.content
-                            break
-                        last_err = RuntimeError(f"HTTP {r.status_code}")
-                    except Exception as e:
-                        last_err = e
-                if not data:
-                    raise RuntimeError(f"免费接口没有返回图片（{last_err}）")
-                pm.loadFromData(data)
-                if pm.isNull():
-                    raise RuntimeError("免费接口返回的不是图片")
-                pm = pm.copy(0, 0, pm.width(), max(1, int(pm.height() * 0.94)))
-                self.base.setPixmap(cover_pixmap(pm, self.canvas_w, self.canvas_h))
-                QMessageBox.information(
-                    self, "生图完成",
-                    "已用 Pollinations 免费接口生成并铺为画布背景；"
-                    "不满意可以换个「风格」再生成一次。")
-            elif provider == "local":
-                model_path = r"D:\ComfyUI\models\checkpoints\sd_xl_base_1.0.safetensors"
-                py_path = r"D:\Python311\python.exe"
-                script = r"D:\SDXL\gen_once.py"
-                if not (os.path.exists(model_path) and os.path.exists(py_path) and os.path.exists(script)):
-                    raise RuntimeError("未检测到本地 SDXL，请确认 D:/ComfyUI 模型与 D:/Python311 已部署")
-                out = os.path.join(data_dir(), "sdxl_design_tmp.png")
-                prompt = (theme_text or "婚礼") + f"，{style_cn}，婚礼海报背景，高级留白，细腻光影，无人物，无文字，无水印"
-                proc = subprocess.Popen([py_path, script, "--prompt", prompt, "--out", out,
-                                         "--steps", "8", "--size", "1024"],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                dlg = QProgressDialog("本地 SDXL 生成中…（CPU 可能较慢）", "取消", 0, 0, self)
-                dlg.setWindowTitle("本地生图")
-                dlg.setWindowModality(Qt.WindowModal)
-                dlg.setMinimumDuration(0)
-                dlg.show()
-                while proc.poll() is None:
-                    QApplication.processEvents()
-                    if dlg.wasCanceled():
-                        proc.kill()
-                        break
-                    time.sleep(0.2)
-                dlg.close()
-                if proc.returncode not in (0, None):
-                    err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-400:]
-                    raise RuntimeError("本地生成失败：" + (err or f"退出码 {proc.returncode}"))
-                if not os.path.exists(out):
-                    raise RuntimeError("本地生成没有输出文件")
-                pm.load(out)
-                if pm.isNull():
-                    raise RuntimeError("本地输出的图片无法读取")
-                self.base.setPixmap(cover_pixmap(pm, self.canvas_w, self.canvas_h))
-                QMessageBox.information(self, "生图完成", "已用本地 SDXL 生成并铺为画布背景。")
-            else:
-                if provider == "zhipu":
-                    base = "https://open.bigmodel.cn/api/paas/v4"
-                    model = "cogview-3-flash"
-                    key = get_setting("img_api_key", "")
-                elif provider == "doubao":
-                    base = "https://ark.cn-beijing.volces.com/api/v3"
-                    model = "doubao-seedream-3-0-t2i-250415"
-                    key = get_setting("img_api_key", "")
-                else:
-                    base = get_setting("img_base_url", "")
-                    key = get_setting("img_api_key", "")
-                    model = get_setting("img_model", "") or "qwen-image"
-                if not key:
-                    QMessageBox.information(
-                        self, "还需要 Key",
-                        "智谱 CogView-3-Flash 有免费额度、豆包 Seedream 需开通，"
-                        "请先在「生图 API…」里填自己的 Key；不想填 Key 可以直接用免费的 Pollinations。")
-                    return
-                if not base:
-                    QMessageBox.information(
-                        self, "未配置生图接口",
-                        "请在「生图 API…」里填写接口地址、Key 与模型，或切回免费的 Pollinations。")
-                    return
-                prompt = (theme_text or "婚礼") + f"，{style_cn}，婚礼海报背景，" \
-                         "高级留白，细腻光影，无人物，无文字，无水印，高清"
-                url = base.rstrip("/")
-                if not url.endswith("/images/generations"):
-                    url += "/images/generations"
-                headers = {"Content-Type": "application/json",
-                           "Authorization": "Bearer " + key}
-                r = requests.post(url, headers=headers, json={
-                    "model": model, "prompt": prompt, "n": 1,
-                    "size": "1024x1024", "response_format": "url",
-                }, timeout=120)
-                r.raise_for_status()
-                data = r.json()
-                item = (data.get("data") or [{}])[0]
-                if item.get("b64_json"):
-                    import base64
-                    pm.loadFromData(base64.b64decode(item["b64_json"]))
-                elif item.get("url"):
-                    r2 = requests.get(item["url"], timeout=90)
-                    r2.raise_for_status()
-                    pm.loadFromData(r2.content)
-                if pm.isNull():
-                    raise RuntimeError("返回里没有可用的图片数据")
-                self.base.setPixmap(cover_pixmap(pm, self.canvas_w, self.canvas_h))
-                QMessageBox.information(self, "生图完成", "已铺为画布背景，可继续加文字排版。")
+            pm.loadFromData(data)
+            if pm.isNull():
+                pm = QPixmap.fromImage(QImage.fromData(data, "WEBP"))
+            if pm.isNull():
+                raise RuntimeError("返回的图片无法读取")
+            self.base.setPixmap(cover_pixmap(pm, self.canvas_w, self.canvas_h))
+            self.btn_gen.setEnabled(True); self.btn_gen.setText("文字生图")
+            QMessageBox.information(self, "生图完成", self._fetch_msg)
         except Exception as e:
-            if provider == "local":
-                extra = "\n\n本地 SDXL 在 780M 核显上只能 CPU 运行，512×512/6 步可能需要数分钟；急用建议切回 FLUX/Pollinations。"
-            elif provider == "pollinations":
-                extra = "\n\n免费接口可能较慢或被网络拦截；可在「生图 API…」里换智谱 CogView-3-Flash（免费额度）或自己的接口。"
-            else:
-                extra = "\n\n请核对 Key、模型名与接口地址（智谱 CogView-3-Flash / 豆包 Seedream）。"
-            QMessageBox.warning(self, "生图失败", f"{e}{extra}")
-        finally:
-            self.btn_gen.setEnabled(True)
-            self.btn_gen.setText("文字生图")
+            self._on_image_failed(str(e))
+
+    def _on_image_failed(self, err):
+        provider = self._img_provider()
+        extra = ""
+        if provider == "local":
+            extra = "\n\n本地 SDXL 需要模型、Python 与脚本路径正确；可在设置里配置。"
+        elif provider in ("hf", "pollinations"):
+            extra = "\n\n免费接口可能较慢或被网络拦截；可换智谱 CogView 或自己的接口。"
+        else:
+            extra = "\n\n请核对 Key、模型名与接口地址。"
+        self.btn_gen.setEnabled(True); self.btn_gen.setText("文字生图")
+        QMessageBox.warning(self, "生图失败", f"{err}{extra}")
 
     # ---------------- 导出 ----------------
     def _canvas_image(self, fmt="PNG"):

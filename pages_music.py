@@ -14,8 +14,8 @@ import subprocess
 import ctypes
 import ctypes.wintypes
 
-from PySide6.QtCore import Qt, QUrl, QTimer, QSize, QDir, QModelIndex, QMimeData
-from PySide6.QtGui import QFont, QAction, QIcon, QKeySequence, QShortcut, QDrag
+from PySide6.QtCore import Qt, QUrl, QTimer, QSize, QDir, QModelIndex, QMimeData, QItemSelection, QItemSelectionModel, QPoint
+from PySide6.QtGui import QFont, QAction, QIcon, QKeySequence, QShortcut, QDrag, QPainter, QColor, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox,
     QSlider, QLineEdit, QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox,
@@ -408,7 +408,7 @@ class DragSpinBox(QSpinBox):
 class PlayTable(QTableWidget):
     """可接收文件拖拽、也能把曲目拖到左侧播放列表"""
 
-    MIME = "application/x-pengfei-tracks"
+    MIME = "application/x-host-tracks"
 
     def __init__(self, page, parent=None):
         super().__init__(0, 3, parent)
@@ -418,6 +418,52 @@ class PlayTable(QTableWidget):
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDrop)
         self.setDefaultDropAction(Qt.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._drop_row = -1
+        self._drag_rows = []
+        self._ind_phase = 0
+        self._ind_timer = QTimer(self)
+        self._ind_timer.setInterval(90)
+        self._ind_timer.timeout.connect(self._tick_indicator)
+
+    def _tick_indicator(self):
+        self._ind_phase = (self._ind_phase + 1) % 20
+        self.viewport().update()
+
+    def _set_drop_row(self, row):
+        if row != self._drop_row:
+            self._drop_row = row
+            self.viewport().update()
+        if row >= 0 and not self._ind_timer.isActive():
+            self._ind_timer.start()
+
+    def _clear_drop(self):
+        self._drop_row = -1
+        self._drag_rows = []
+        self._ind_timer.stop()
+        self.viewport().update()
+
+    def dragLeaveEvent(self, e):
+        self._clear_drop()
+        super().dragLeaveEvent(e)
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        if self._drop_row < 0 or not self._drag_rows:
+            return
+        row = min(self._drop_row, self.rowCount())
+        y = self.rowViewportPosition(row) if row < self.rowCount() else self.viewport().height() - 1
+        import math as _m
+        alpha = 150 + int(80 * (0.5 + 0.5 * _m.sin(self._ind_phase / 20 * 2 * _m.pi)))
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(201, 168, 106, alpha), 3))
+        p.drawLine(0, y, self.viewport().width(), y)
+        p.setBrush(QColor(201, 168, 106, alpha))
+        p.setPen(Qt.NoPen)
+        p.drawPolygon(QPolygon([QPoint(0, y), QPoint(10, y - 6), QPoint(10, y + 6)]))
+        p.end()
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls() or e.mimeData().hasFormat(self.MIME):
@@ -427,6 +473,10 @@ class PlayTable(QTableWidget):
 
     def dragMoveEvent(self, e):
         if e.mimeData().hasUrls() or e.mimeData().hasFormat(self.MIME):
+            row = self.indexAt(e.position().toPoint()).row()
+            if row < 0:
+                row = self.rowCount()
+            self._set_drop_row(row)
             e.acceptProposedAction()
         else:
             super().dragMoveEvent(e)
@@ -442,14 +492,35 @@ class PlayTable(QTableWidget):
                 paths.append(lst["items"][r])
         if not paths:
             return
+        self._drag_rows = rows
         mime = QMimeData()
         mime.setData(self.MIME, json.dumps({"from": self.page.lib.current, "paths": paths}).encode("utf-8"))
         mime.setText("\n".join(paths))
         drag = QDrag(self)
         drag.setMimeData(mime)
+        # 跟随鼠标的“拖动卡片”：显示正在拖哪几首歌
+        titles = []
+        for r in rows[:4]:
+            it = self.item(r, 1)
+            if it:
+                titles.append(it.text())
+        h = 30 + 22 * max(1, len(titles))
+        pix = QPixmap(360, h)
+        pix.fill(QColor(18, 20, 26, 235))
+        pnt = QPainter(pix)
+        pnt.setPen(QColor(201, 168, 106))
+        pnt.drawText(12, 20, f"正在拖动 {len(paths)} 首")
+        pnt.setPen(QColor(240, 236, 226))
+        for i, t in enumerate(titles):
+            pnt.drawText(14, 40 + i * 22, t[:26])
+        pnt.end()
+        drag.setPixmap(pix)
+        drag.setHotSpot(QPoint(18, 18))
         drag.exec(Qt.MoveAction | Qt.CopyAction)
+        self._clear_drop()
 
     def dropEvent(self, e):
+        self._clear_drop()
         if e.mimeData().hasUrls():
             paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
             if paths:
@@ -457,7 +528,19 @@ class PlayTable(QTableWidget):
                 e.acceptProposedAction()
             return
         if e.mimeData().hasFormat(self.MIME):
-            e.ignore()
+            try:
+                data = json.loads(bytes(e.mimeData().data(self.MIME)).decode("utf-8"))
+                paths = data.get("paths") or []
+                if int(data.get("from", -1)) != self.page.lib.current:
+                    e.ignore()
+                    return
+                pos = e.position().toPoint()
+                idx = self.indexAt(pos)
+                row = idx.row() if idx.isValid() else self.rowCount()
+                self.page.move_tracks_within(paths, row)
+                e.acceptProposedAction()
+            except Exception:
+                e.ignore()
             return
         super().dropEvent(e)
 
@@ -465,7 +548,7 @@ class PlayTable(QTableWidget):
 class PlaylistList(QListWidget):
     """左侧播放列表：接收曲目拖拽，可直接把歌曲移到这个列表"""
 
-    MIME = "application/x-pengfei-tracks"
+    MIME = "application/x-host-tracks"
 
     def __init__(self, page, parent=None):
         super().__init__(parent)
@@ -1359,7 +1442,8 @@ class MusicPage(QWidget):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAcceptDrops(True)
-        self.table.setDragDropMode(QAbstractItemView.DropOnly)
+        self.table.setDragEnabled(True)
+        self.table.setDragDropMode(QAbstractItemView.DragDrop)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._track_menu)
         self.table.doubleClicked.connect(self._table_play)
@@ -1768,6 +1852,37 @@ class MusicPage(QWidget):
         except Exception:
             return os.path.splitext(os.path.basename(path))[0]
 
+    def move_tracks_within(self, paths, row):
+        """在当前播放列表内拖拽排序：把 paths 移到 row 位置。"""
+        if not paths or not self.lib.lists:
+            return
+        lst = self.lib.lists[self.lib.current]
+        items = list(lst["items"])
+        moving_set = set(paths)
+        moving = [p for p in items if p in moving_set]
+        if not moving:
+            return
+        target = max(0, min(int(row), len(items)))
+        rest = [p for p in items if p not in moving_set]
+        before = [p for p in items[:target] if p not in moving_set]
+        new_items = rest[:len(before)] + moving + rest[len(before):]
+        if new_items == items:
+            return
+        lst["items"] = new_items
+        self.lib.save()
+        self._load_tracks()
+        sel = QItemSelection()
+        first = -1
+        for i, p in enumerate(new_items):
+            if p in moving_set:
+                sel.select(self.table.model().index(i, 0), self.table.model().index(i, 2))
+                if first < 0:
+                    first = i
+        if first >= 0:
+            self.table.selectionModel().select(
+                sel, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            self.table.setCurrentCell(first, 0)
+
     def _load_tracks(self):
         if not self.lib.lists:
             self.lib.lists = [{"name": "默认列表", "items": []}]
@@ -1779,15 +1894,15 @@ class MusicPage(QWidget):
         for i, p in enumerate(lst["items"]):
             it0 = QTableWidgetItem(str(i + 1))
             it0.setTextAlignment(Qt.AlignCenter)
-            it0.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            it0.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled)
             name = self.track_title(p)
             it1 = QTableWidgetItem(name)
             it1.setToolTip(p)
-            it1.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            it1.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled)
             dur = self._dur(p)
             it2 = QTableWidgetItem(fmt_hms(dur))
             it2.setTextAlignment(Qt.AlignCenter)
-            it2.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            it2.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled)
             self.table.setItem(i, 0, it0)
             self.table.setItem(i, 1, it1)
             self.table.setItem(i, 2, it2)
