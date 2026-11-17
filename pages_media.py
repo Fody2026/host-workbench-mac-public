@@ -743,6 +743,13 @@ class SettingsPage(QWidget):
         self.ed_appname.setMinimumWidth(200)
         g.addWidget(self.ed_appname, 1, 1, 1, 2)
         v1.addLayout(g)
+        brow = QHBoxLayout()
+        b_guide = QPushButton("重新学习引导")
+        b_guide.setToolTip("")
+        b_guide.clicked.connect(self.open_guide)
+        brow.addWidget(b_guide)
+        brow.addStretch()
+        v1.addLayout(brow)
 
         g2 = QGridLayout()
         g2.setHorizontalSpacing(14)
@@ -908,6 +915,10 @@ class SettingsPage(QWidget):
         row6.addWidget(b_open)
         row6.addStretch()
         v6.addLayout(row6)
+        dir_lb = QLabel("数据目录：" + data_dir())
+        dir_lb.setObjectName("SubTitle")
+        dir_lb.setWordWrap(True)
+        v6.addWidget(dir_lb)
         lay.addWidget(card6)
 
         lay.addStretch()
@@ -980,6 +991,20 @@ class SettingsPage(QWidget):
         win = self.window()
         if hasattr(win, "apply_theme"):
             win.apply_theme(name)
+
+    def open_guide(self):
+        try:
+            from app import OnboardingWizard
+            dlg = OnboardingWizard(common._shared(), self)
+            if dlg.exec():
+                self.load_values()
+                win = self.window()
+                if hasattr(win, "apply_theme"):
+                    win.apply_theme(self.cb_theme.currentText())
+                if hasattr(win, "apply_name"):
+                    win.apply_name(self.ed_appname.text().strip() or "主持人工作台")
+        except Exception as e:
+            QMessageBox.warning(self, "无法打开引导", str(e))
 
     def open_img_connect(self):
         dlg = ImageConnectDialog(self)

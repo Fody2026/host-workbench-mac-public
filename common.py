@@ -13,7 +13,7 @@ import tempfile
 import datetime
 
 APP_NAME = "主持人工作台"
-APP_VERSION = "4.8.3"
+APP_VERSION = "4.9"
 
 
 def base_dir() -> str:

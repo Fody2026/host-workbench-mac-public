@@ -681,6 +681,7 @@ class AIWriterPage(QWidget):
         self._last_reply = ""
         self.history = []
         self._images = []
+        self._mode = "opening"
         self._q_text = ""
         self._q_name = ""
         _ensure_style_dir()
@@ -751,56 +752,14 @@ class AIWriterPage(QWidget):
         lb_chat.setObjectName("SectionTitle")
         bar_top.addWidget(lb_chat)
         bar_top.addStretch()
-        b_copy = QPushButton("复制最近回复")
-        b_copy.clicked.connect(self.copy_result)
-        b_word = QPushButton("导出 Word")
-        b_word.clicked.connect(self.export_word)
-        b_clear = QPushButton("清空对话")
-        b_clear.clicked.connect(self.clear_chat)
-        bar_top.addWidget(b_copy)
-        bar_top.addWidget(b_word)
-        bar_top.addWidget(b_clear)
         lv.addLayout(bar_top)
 
         self.chat = QTextBrowser()
         self.chat.setOpenExternalLinks(False)
         self.chat.setPlaceholderText("直接说你要什么：写开场白、写完整主持词、想 12 个创意环节、改一版……")
         self.chat.setStyleSheet("QTextBrowser{background:transparent;border:none;}")
-        self.chat.setFont(QFont("Microsoft YaHei UI", 11))
+        self.chat.setFont(QFont("Noto Sans CJK SC", 12))
         lv.addWidget(self.chat, 1)
-
-        # 四个快捷入口：两列两行，保证文字完整可读
-        qgrid = QGridLayout()
-        qgrid.setSpacing(6)
-        for i, (label, skeleton) in enumerate([
-            ("写开场白", "帮我写一段婚礼开场白。新人信息："),
-            ("完整主持词", "帮我写一份完整的婚礼主持词。新人故事 / 问卷信息："),
-            ("12 个创意环节", "给我 12 个适合这对新人的创意环节，要能落地。新人信息："),
-            ("改一版", "把下面这段改得更克制、更像口语：\n"),
-        ]):
-            b = QPushButton(label)
-            b.setMinimumHeight(32)
-            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            b.clicked.connect(lambda _=False, s=skeleton: self._fill_input(s))
-            qgrid.addWidget(b, i // 2, i % 2)
-        lv.addLayout(qgrid)
-
-        # 附件：文档 + 图片，都直接放在对话框里
-        arow = QHBoxLayout()
-        arow.setSpacing(6)
-        b_updoc = QPushButton("上传文档")
-        b_updoc.setToolTip("支持 doc/docx/pdf/rtf/odt/txt/md/html/pptx/xlsx 等常见文档")
-        b_updoc.clicked.connect(self.upload_docs)
-        b_upimg = QPushButton("上传图片")
-        b_upimg.setToolTip("上传现场图、参考图或手写稿，当前模型需支持识图")
-        b_upimg.clicked.connect(self.upload_images)
-        self.btn_docs = QPushButton("写词参考 0 篇")
-        self.btn_docs.clicked.connect(self.manage_docs)
-        arow.addWidget(b_updoc)
-        arow.addWidget(b_upimg)
-        arow.addWidget(self.btn_docs)
-        arow.addStretch()
-        lv.addLayout(arow)
 
         self.img_bar = QWidget()
         self.img_lay = QHBoxLayout(self.img_bar)
@@ -831,7 +790,48 @@ class AIWriterPage(QWidget):
         row.addWidget(self.btn_send)
         lv.addLayout(row)
 
-        lay.addWidget(left, 1)
+        side = QFrame()
+        side.setObjectName("CardAlt")
+        side.setFixedWidth(210)
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(12, 12, 12, 12)
+        sv.setSpacing(10)
+        lb_mode = QLabel("写作模式")
+        lb_mode.setObjectName("SectionTitle")
+        sv.addWidget(lb_mode)
+        lb_hint = QLabel("不选则默认写开场白")
+        lb_hint.setObjectName("SubTitle")
+        lb_hint.setWordWrap(True)
+        sv.addWidget(lb_hint)
+        self.btn_full = QPushButton("完整主持词")
+        self.btn_full.setCheckable(True)
+        self.btn_full.setMinimumHeight(42)
+        self.btn_full.toggled.connect(lambda on: self._set_mode("full" if on else "opening"))
+        sv.addWidget(self.btn_full)
+        self.btn_creative = QPushButton("创意环节")
+        self.btn_creative.setCheckable(True)
+        self.btn_creative.setMinimumHeight(42)
+        self.btn_creative.toggled.connect(lambda on: self._set_mode("creative" if on else "opening"))
+        sv.addWidget(self.btn_creative)
+        sv.addSpacing(8)
+        lb_tools = QLabel("对话工具")
+        lb_tools.setObjectName("SectionTitle")
+        sv.addWidget(lb_tools)
+        self.btn_docs = QPushButton("写词参考 0 篇")
+        self.btn_docs.clicked.connect(self.manage_docs)
+        for text, slot in (("上传文档", self.upload_docs), ("上传图片", self.upload_images),
+                           ("复制最近回复", self.copy_result), ("导出 Word", self.export_word),
+                           ("清空对话", self.clear_chat)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            sv.addWidget(b)
+        sv.addWidget(self.btn_docs)
+        sv.addStretch()
+        body = QHBoxLayout()
+        body.setSpacing(10)
+        body.addWidget(left, 1)
+        body.addWidget(side)
+        lay.addLayout(body, 1)
         self._populate_models(False)
 
     # ---------- 连接与模型 ----------
@@ -928,6 +928,16 @@ class AIWriterPage(QWidget):
         sb = self.chat.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def _set_mode(self, mode):
+        self._mode = mode if mode in ("opening", "full", "creative") else "opening"
+        for b, key in ((self.btn_full, "full"), (self.btn_creative, "creative")):
+            b.blockSignals(True)
+            b.setChecked(self._mode == key)
+            b.blockSignals(False)
+        self.status.setText({"opening": "默认模式 · 开场白",
+                             "full": "已选 · 完整主持词",
+                             "creative": "已选 · 创意环节"}[self._mode])
+
     def _fill_input(self, skeleton):
         self.ed_input.setPlainText(skeleton)
         self.ed_input.setFocus()
@@ -986,10 +996,19 @@ class AIWriterPage(QWidget):
         return "【客户问卷（已上传）】\n" + self._q_text[:12000] + "\n"
 
     def _system_prompt(self):
+        mode_txt = {"opening": "只写开场白，不要写完整流程，不要给创意清单。",
+                    "full": "写完整主持词，按环节分段，可直接照读。",
+                    "creative": "只给创意环节清单，每条写清怎么做、需要什么道具。"}[getattr(self, "_mode", "opening")]
         lines = [
             f"你是专业婚礼主持人的写作搭档，服务对象是{self.db.get_setting('user_name','这位主持人')}。",
-            "回复要求：直接用中文给他能上口的文本；不要解释你在做什么，不要输出模板或套话说明；"
-            "台词按环节分段、可直接朗读；创意给能落地的做法；信息不够时先问一个最关键的问题。",
+            "【本次任务】" + mode_txt,
+            "【写作铁律】",
+            "1. 开头必须落在一个具体的物或概念上（如一张纸、一束光、一段路），先讲来历，再落到人；禁止用“今天相聚在这里”开头。",
+            "2. 用白描：写动作、声音、光线、数字，不写“感动/温暖/幸福/最美/命中注定”这类情绪词。",
+            "3. 多用时间和数字当骨架（几年、几公里、几次），句子要短，能用短句就不用长句。",
+            "4. 不虚构问卷和文档里没有的细节；信息不够时只问一个最关键的问题。",
+            "5. 结尾落到来宾：感谢一路支持他们的人，最后用“欢迎你们”这类短句收住。",
+            "6. 开场白正文控制在 280–350 字；不要解释你在做什么，不要输出写作说明。",
         ]
         style = self._style_text()
         if style:
@@ -1594,7 +1613,7 @@ class PrepToolsPage(QWidget):
             if self.cb_mode.currentIndex() == 0:
                 doc = Document()
                 style = doc.styles["Normal"]
-                style.font.name = "Microsoft YaHei"
+                style.font.name = "Noto Sans CJK SC"
                 style.font.size = Pt(11)
                 for idx, (name, lines) in enumerate(selected_builtin):
                     if idx > 0:
@@ -1613,7 +1632,7 @@ class PrepToolsPage(QWidget):
                 for name, lines in selected_builtin:
                     doc = Document()
                     style = doc.styles["Normal"]
-                    style.font.name = "Microsoft YaHei"
+                    style.font.name = "Noto Sans CJK SC"
                     style.font.size = Pt(11)
                     doc.add_heading(name, level=1)
                     for ln in lines[1:]:

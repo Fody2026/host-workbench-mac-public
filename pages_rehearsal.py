@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
     QComboBox, QLineEdit, QSpinBox, QSlider, QCheckBox, QListWidget, QListWidgetItem,
     QTabWidget, QScrollArea, QFileDialog, QMessageBox, QProgressDialog,
-    QAbstractItemView, QSizePolicy, QGraphicsDropShadowEffect, QApplication
+    QAbstractItemView, QSizePolicy, QGraphicsDropShadowEffect, QApplication, QInputDialog
 )
 
 import common
@@ -98,6 +98,8 @@ class ModelLib:
 
     def reload(self):
         self.halls = load_json(asset_path(os.path.join(HALL_DIR, "index.json")), [])
+        _removed = ("花艺长厅", "宴会大厅", "圆桌长厅")
+        self.halls = [h for h in self.halls if not any(x in (h.get("name") or "") for x in _removed)]
         people = load_json(asset_path(os.path.join(PEOPLE_DIR, "index.json")), [])
         props = load_json(asset_path(os.path.join(PROPS_DIR, "index.json")), [])
         for p in people:
@@ -168,6 +170,7 @@ class SandboxCanvas(QWidget):
         self._bg = QPixmap()
         self._backdrop = QPixmap()
         self._drag = None
+        self._drag_path = None
         self._load_hall(self.hall_id)
 
     # ---------- 底图 ----------
@@ -407,7 +410,7 @@ class SandboxCanvas(QWidget):
                 p.drawLine(0, gy, SCENE_W, gy)
 
         # 舞台 / 入口 标注
-        f = QFont("Microsoft YaHei UI")
+        f = QFont("Noto Sans CJK SC")
         f.setPixelSize(22)
         f.setLetterSpacing(QFont.AbsoluteSpacing, 3)
         p.setFont(f)
@@ -448,7 +451,7 @@ class SandboxCanvas(QWidget):
 
         # 人物
         order = sorted(range(len(self.actors)), key=lambda i: self.actor_position(self.actors[i])[1])
-        fnt = QFont("Microsoft YaHei UI")
+        fnt = QFont("Noto Sans CJK SC")
         for idx in order:
             a = self.actors[idx]
             x, y = self.actor_position(a)
@@ -544,20 +547,25 @@ class SandboxCanvas(QWidget):
         if pos is None:
             return
         sx, sy = pos
+        idx = self._hit(pos)
         if self.path_mode:
             a = self.selected_actor()
             if a is None:
-                idx = self._hit(pos)
                 if idx < 0:
                     return
                 self.sel = idx
-                self.actorSelected.emit(self.sel)
+                self.actorSelected.emit(idx)
                 a = self.actors[idx]
+                paths = a.setdefault("paths", [])
+                while len(paths) <= self.current_phase:
+                    paths.append([])
+                if not paths[self.current_phase]:
+                    paths[self.current_phase] = [[round(a["x"], 4), round(a["y"], 4)]]
             self.editStarted.emit()
             self.add_phase_point(a, self.current_phase, sx, sy)
             self.sceneEdited.emit()
+            self.update()
             return
-        idx = self._hit(pos)
         self.sel = idx
         self.actorSelected.emit(idx)
         self.update()
@@ -592,7 +600,7 @@ class SandboxCanvas(QWidget):
     def mouseReleaseEvent(self, ev):
         if self._drag:
             self._drag = None
-            self.setCursor(Qt.ArrowCursor)
+            self.setCursor(Qt.CrossCursor if self.path_mode else Qt.ArrowCursor)
             self.sceneEdited.emit()
 
     def mouseDoubleClickEvent(self, ev):
@@ -673,7 +681,7 @@ class TimelineWidget(QWidget):
                 c.setAlpha(105)
             p.fillRect(block, c)
             if block.width() > 34:
-                f = QFont("Microsoft YaHei UI")
+                f = QFont("Noto Sans CJK SC")
                 f.setPixelSize(11)
                 p.setFont(f)
                 p.setPen(QColor(24, 22, 18, 235))
@@ -684,7 +692,7 @@ class TimelineWidget(QWidget):
                     p.drawText(block.adjusted(5, 1, -4, -1), Qt.AlignRight | Qt.AlignVCenter,
                                f"{secs:.1f}s")
             if block.width() > 70:
-                f = QFont("Microsoft YaHei UI")
+                f = QFont("Noto Sans CJK SC")
                 f.setPixelSize(10)
                 p.setFont(f)
                 p.setPen(QColor(255, 255, 255, 150))
@@ -698,7 +706,7 @@ class TimelineWidget(QWidget):
         p.setPen(Qt.NoPen)
         p.drawPolygon(QPolygonF([QPointF(px - 6, track.y() - 14), QPointF(px + 6, track.y() - 14),
                                  QPointF(px, track.y() - 6)]))
-        f = QFont("Microsoft YaHei UI")
+        f = QFont("Noto Sans CJK SC")
         f.setPixelSize(11)
         p.setFont(f)
         p.setPen(QColor(255, 255, 255, 160))
@@ -800,13 +808,21 @@ class RehearsalPage(QWidget):
         bar.addWidget(b_stop)
         self.chk_loop = QCheckBox("循环")
         bar.addWidget(self.chk_loop)
-        bar.addWidget(QLabel("演示时长"))
+        bar.addWidget(QLabel("每环节"))
+        self.sp_phase_secs = QSpinBox()
+        self.sp_phase_secs.setRange(1, 600)
+        self.sp_phase_secs.setValue(3)
+        self.sp_phase_secs.setSuffix(" 秒")
+        self.sp_phase_secs.setFixedWidth(92)
+        self.sp_phase_secs.valueChanged.connect(self._on_phase_secs_changed)
+        bar.addWidget(self.sp_phase_secs)
+        bar.addWidget(QLabel("总时长"))
         self.sp_secs = QSpinBox()
         self.sp_secs.setRange(1, 2147483647)
-        self.sp_secs.setValue(24)
+        self.sp_secs.setValue(3)
         self.sp_secs.setSuffix(" 秒")
-        self.sp_secs.setFixedWidth(120)
-        self.sp_secs.valueChanged.connect(self._on_secs_changed)
+        self.sp_secs.setFixedWidth(100)
+        self.sp_secs.setReadOnly(True)
         bar.addWidget(self.sp_secs)
         self.lb_time = QLabel("00:00 / 00:24")
         self.lb_time.setObjectName("Body")
@@ -817,7 +833,7 @@ class RehearsalPage(QWidget):
 
         # 右：配置卡（三页签）
         self.right_card = make_card()
-        self.right_card.setFixedWidth(292)
+        self.right_card.setFixedWidth(380)
         rv = QVBoxLayout(self.right_card)
         rv.setContentsMargins(12, 12, 12, 12)
         rv.setSpacing(8)
@@ -825,7 +841,7 @@ class RehearsalPage(QWidget):
         self.tabs.setObjectName("PrepTabs")
         self.tabs.addTab(self._tab_scene(), "场景")
         self.tabs.addTab(self._tab_people(), "人物")
-        self.tabs.addTab(self._tab_path(), "动线")
+        self.tabs.addTab(self._tab_path(), "手绘动线")
         rv.addWidget(self.tabs, 1)
         body.addWidget(self.right_card)
 
@@ -1073,10 +1089,24 @@ class RehearsalPage(QWidget):
         row.addWidget(b_clr)
         row.addWidget(b_all)
         v.addLayout(row)
-        b_aisle = QPushButton("一键：新人入场动线")
-        b_aisle.setObjectName("Primary")
-        b_aisle.clicked.connect(self.preset_aisle_path)
-        v.addWidget(b_aisle)
+        b_save_preset = QPushButton("保存当前动线预设")
+        b_save_preset.setObjectName("Primary")
+        b_save_preset.clicked.connect(self.save_path_preset)
+        v.addWidget(b_save_preset)
+        self.preset_list = QListWidget()
+        self.preset_list.setObjectName("Plain")
+        self.preset_list.setFixedHeight(120)
+        self.preset_list.itemDoubleClicked.connect(self.apply_path_preset)
+        v.addWidget(QLabel("已保存的动线预设（双击应用）"))
+        v.addWidget(self.preset_list)
+        prow = QHBoxLayout()
+        b_load = QPushButton("应用选中")
+        b_load.clicked.connect(lambda: self.apply_path_preset(self.preset_list.currentItem()))
+        b_del = QPushButton("删除选中")
+        b_del.clicked.connect(self.delete_path_preset)
+        prow.addWidget(b_load); prow.addWidget(b_del)
+        v.addLayout(prow)
+        self._load_path_presets()
         b_split = QPushButton("均分当前动线到各环节")
         b_split.setToolTip("把选中人物当前环节的整条动线平均切成 N 段，每段一个环节")
         b_split.clicked.connect(self.split_current_path)
@@ -1086,22 +1116,78 @@ class RehearsalPage(QWidget):
         self.lb_path.setWordWrap(True)
         v.addWidget(self.lb_path)
 
-        lb3 = QLabel("导出")
-        lb3.setObjectName("SectionTitle")
-        v.addWidget(lb3)
-        b_png = QPushButton("导出当前画面 PNG")
-        b_png.clicked.connect(self.export_png)
-        b_mp4 = QPushButton("导出动线演示 MP4")
-        b_mp4.setObjectName("Primary")
-        b_mp4.clicked.connect(lambda: self.export_mp4())
-        v.addWidget(b_png)
-        v.addWidget(b_mp4)
-        tip2 = QLabel("MP4 按「演示时长」逐帧渲染，时长等于演示时长；超长会先确认。")
-        tip2.setObjectName("Body")
-        tip2.setWordWrap(True)
-        v.addWidget(tip2)
         v.addStretch()
         return w
+
+    def _path_preset_file(self):
+        return os.path.join(data_dir(), "sandbox_path_presets.json")
+
+    def _load_path_presets(self):
+        try:
+            self._path_presets = json.load(open(self._path_preset_file(), encoding="utf-8"))
+        except Exception:
+            self._path_presets = []
+        if hasattr(self, "preset_list"):
+            self.preset_list.clear()
+            for p in self._path_presets:
+                it = QListWidgetItem(p.get("name", "未命名"))
+                it.setToolTip(f"{p.get('phase_count',1)} 个环节 · {len(p.get('actors',[]))} 个角色")
+                self.preset_list.addItem(it)
+
+    def save_path_preset(self):
+        name, ok = QInputDialog.getText(self, "保存动线预设", "预设名称：", text="我的动线")
+        if not ok or not name.strip():
+            return
+        data = {"name": name.strip(), "hall": self.canvas.hall_id,
+                "phase_count": self.sp_phases.value(),
+                "actors": copy.deepcopy(self.canvas.actors)}
+        self._path_presets.append(data)
+        try:
+            json.dump(self._path_presets, open(self._path_preset_file(), "w", encoding="utf-8"),
+                      ensure_ascii=False, indent=1)
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", str(e))
+            return
+        self._load_path_presets()
+        self.lb_path.setText(f"已保存动线预设：{name.strip()}")
+
+    def apply_path_preset(self, item):
+        if item is None:
+            return
+        row = self.preset_list.row(item)
+        if row < 0 or row >= len(self._path_presets):
+            return
+        p = self._path_presets[row]
+        self._snapshot()
+        try:
+            if p.get("hall"):
+                self.canvas.set_hall(p["hall"])
+            self.sp_phases.setValue(max(1, int(p.get("phase_count", 1))))
+            self.canvas.actors = copy.deepcopy(p.get("actors") or [])
+            self.canvas.set_phase_count(self.sp_phases.value())
+            self._phase = 0
+            self.canvas.current_phase = 0
+            self.canvas.set_progress(0.0)
+            self._rebuild_timeline()
+            self.canvas.update()
+            self.refresh_roster()
+            self.lb_path.setText("已应用预设：" + p.get("name", ""))
+        except Exception as e:
+            QMessageBox.warning(self, "应用失败", str(e))
+
+    def delete_path_preset(self):
+        item = self.preset_list.currentItem()
+        if item is None:
+            return
+        row = self.preset_list.row(item)
+        if 0 <= row < len(self._path_presets):
+            self._path_presets.pop(row)
+            try:
+                json.dump(self._path_presets, open(self._path_preset_file(), "w", encoding="utf-8"),
+                          ensure_ascii=False, indent=1)
+            except Exception:
+                pass
+            self._load_path_presets()
 
     # ---------------- 数据 ----------------
     def refresh(self):
@@ -1134,6 +1220,16 @@ class RehearsalPage(QWidget):
     def _on_phases_changed(self, v):
         self._phase = min(self._phase, max(0, v - 1))
         self.canvas.set_phase_count(v)
+        if hasattr(self, "sp_phase_secs"):
+            total = max(1, self.sp_phase_secs.value()) * max(1, v)
+            self.sp_secs.blockSignals(True)
+            self.sp_secs.setValue(total)
+            self.sp_secs.blockSignals(False)
+        if hasattr(self, "sp_preset_phases"):
+            self.sp_preset_phases.blockSignals(True)
+            self.sp_preset_phases.setValue(v)
+            self.sp_preset_phases.blockSignals(False)
+            self._refresh_preset_phase_combo()
         self._rebuild_timeline()
 
     def _on_phase_pick(self, idx, seek=True):
@@ -1142,6 +1238,12 @@ class RehearsalPage(QWidget):
         self._phase = idx
         self.canvas.current_phase = idx
         self._update_phase_combo()
+        if hasattr(self, "cb_preset_phase"):
+            self.cb_preset_phase.blockSignals(True)
+            while self.cb_preset_phase.count() <= idx:
+                self.cb_preset_phase.addItem(f"环节 {self.cb_preset_phase.count()+1}")
+            self.cb_preset_phase.setCurrentIndex(idx)
+            self.cb_preset_phase.blockSignals(False)
         n = max(1, self.sp_phases.value())
         if seek:
             self.on_seek(idx / n)
@@ -1357,10 +1459,181 @@ class RehearsalPage(QWidget):
         self.canvas.show_grid = bool(on)
         self.canvas.update()
 
+    # ---------------- 快速排位 ----------------
+    def _tab_presets(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(10, 12, 10, 10)
+        v.setSpacing(8)
+        lb = QLabel("快速排位（自动生成人物与动线）")
+        lb.setObjectName("SectionTitle")
+        lb.setWordWrap(True)
+        v.addWidget(lb)
+        tip = QLabel("点一下即可把人物放到起点并生成第 1 环节动线；之后再拖动/微调。")
+        tip.setObjectName("Body")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("环节数"))
+        self.sp_preset_phases = QSpinBox()
+        self.sp_preset_phases.setRange(1, 99)
+        self.sp_preset_phases.setValue(1)
+        self.sp_preset_phases.setFixedWidth(60)
+        self.sp_preset_phases.valueChanged.connect(self._on_preset_phase_count)
+        prow.addWidget(self.sp_preset_phases)
+        prow.addWidget(QLabel("当前环节"))
+        self.cb_preset_phase = QComboBox()
+        self.cb_preset_phase.addItem("环节 1")
+        self.cb_preset_phase.currentIndexChanged.connect(self._on_preset_phase_pick)
+        prow.addWidget(self.cb_preset_phase, 1)
+        v.addLayout(prow)
+        items = [
+            ("主持暖场（T台中段）", "host_warm"),
+            ("主持上台（T台中段 → 主舞台中央）", "host_enter"),
+            ("新郎台侧登台", "groom_side"),
+            ("新郎T台登场1", "groom_t"),
+            ("新人共同登场", "couple_enter"),
+            ("花童登场", "flower"),
+            ("双方父母登场", "parents_enter"),
+        ]
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        iv = QVBoxLayout(inner); iv.setContentsMargins(0,0,0,0); iv.setSpacing(6)
+        for text, key in items:
+            b = QPushButton(text)
+            b.setMinimumHeight(34)
+            b.clicked.connect(lambda _=False, k=key: self.preset_scene(k))
+            iv.addWidget(b)
+        iv.addStretch()
+        scroll.setWidget(inner)
+        v.addWidget(scroll, 1)
+        return w
+
+    def _refresh_preset_phase_combo(self):
+        n = max(1, self.sp_preset_phases.value())
+        cur = min(getattr(self, "_phase", 0), n - 1)
+        self.cb_preset_phase.blockSignals(True)
+        self.cb_preset_phase.clear()
+        self.cb_preset_phase.addItems([f"环节 {i+1}" for i in range(n)])
+        self.cb_preset_phase.setCurrentIndex(cur)
+        self.cb_preset_phase.blockSignals(False)
+
+    def _on_preset_phase_count(self, v):
+        self._phase = min(getattr(self, "_phase", 0), max(0, v - 1))
+        self.canvas.set_phase_count(v)
+        if hasattr(self, "sp_phases"):
+            self.sp_phases.blockSignals(True)
+            self.sp_phases.setValue(v)
+            self.sp_phases.blockSignals(False)
+        self._refresh_preset_phase_combo()
+        self.canvas.update()
+
+    def _on_preset_phase_pick(self, idx):
+        if idx < 0:
+            return
+        self._phase = idx
+        self.canvas.current_phase = idx
+        if hasattr(self, "sp_phases"):
+            self.sp_phases.blockSignals(True)
+            self.sp_phases.setValue(max(self.sp_phases.value(), idx + 1))
+            self.sp_phases.blockSignals(False)
+        if hasattr(self, "cb_phase"):
+            self.cb_phase.blockSignals(True)
+            while self.cb_phase.count() <= idx:
+                self.cb_phase.addItem(f"环节 {self.cb_phase.count()+1}")
+            self.cb_phase.setCurrentIndex(idx)
+            self.cb_phase.blockSignals(False)
+        n = max(1, self.sp_preset_phases.value())
+        self.canvas.set_progress(min(0.999, (idx + 0.001) / n))
+        self.canvas.update()
+
+    def _preset_actor(self, role, nth=0):
+        found = [a for a in self.canvas.actors if a.get("role") == role]
+        if len(found) > nth:
+            return found[nth]
+        return self.canvas.add_actor(role, role)
+
+    def _apply_preset(self, entries, note):
+        self._snapshot()
+        phase = max(0, int(getattr(self, "_phase", 0)))
+        need = phase + 1
+        if hasattr(self, "sp_preset_phases"):
+            self.sp_preset_phases.blockSignals(True)
+            self.sp_preset_phases.setValue(max(self.sp_preset_phases.value(), need))
+            self.sp_preset_phases.blockSignals(False)
+        if hasattr(self, "sp_phases"):
+            self.sp_phases.blockSignals(True)
+            self.sp_phases.setValue(max(self.sp_phases.value(), need))
+            self.sp_phases.blockSignals(False)
+        self.canvas.set_phase_count(max(self.canvas.phase_count, need))
+        for role, nth, x0, y0, x1, y1 in entries:
+            a = self._preset_actor(role, nth)
+            paths = a.setdefault("paths", [])
+            while len(paths) <= phase:
+                paths.append([])
+            if phase > 0:
+                prev = paths[phase - 1] if paths[phase - 1] else []
+                if prev:
+                    x0, y0 = prev[-1][0], prev[-1][1]
+                else:
+                    x0, y0 = a.get("x", x0), a.get("y", y0)
+            a["x"], a["y"] = x0, y0
+            paths[phase] = [[x0, y0], [x0, (y0 + y1) / 2], [x1, y1]]
+            a.pop("path", None)
+        self._phase = phase
+        self.canvas.current_phase = phase
+        self.canvas.set_progress(min(0.999, (phase + 0.001) / max(1, self.sp_preset_phases.value())))
+        self._rebuild_timeline()
+        self.canvas.update()
+        self.refresh_roster()
+        self._refresh_preset_phase_combo()
+        self.lb_path.setText(note)
+        self.tabs.setCurrentIndex(2)
+
+    def preset_scene(self, kind):
+        # 舞台在画面上方（y≈0.34），T台从舞台向下延伸到入场口（y≈0.96）
+        stage_y = 0.34
+        t_mid = 0.62
+        t_bottom = 0.96
+        host_side = ("司仪", 0, 0.78, stage_y, 0.78, 0.32)
+        data = {
+            "host_warm": [("司仪", 0, 0.50, t_mid, 0.50, 0.42)],
+            "host_enter": [("司仪", 0, 0.50, t_mid, 0.50, stage_y)],
+            "groom_side": [("新郎", 0, 0.24, 0.31, 0.45, stage_y), host_side],
+            "groom_t": [("新郎", 0, 0.50, t_bottom, 0.50, stage_y), host_side],
+            "couple_enter": [("新郎", 0, 0.47, 0.84, 0.47, stage_y),
+                             ("新娘", 0, 0.53, 0.84, 0.53, stage_y),
+                             ("司仪", 0, 0.50, stage_y, 0.72, 0.32)],
+            "flower": [("花童", 0, 0.50, t_bottom, 0.50, 0.43)],
+            "parents_enter": [("新郎", 0, 0.47, stage_y, 0.47, stage_y),
+                              ("新娘", 0, 0.53, stage_y, 0.53, stage_y),
+                              ("父母组", 0, 0.32, t_bottom, 0.32, stage_y),
+                              ("父母组", 1, 0.68, t_bottom, 0.68, stage_y),
+                              ("司仪", 0, 0.78, stage_y, 0.78, 0.32)],
+        }[kind]
+        notes = {"host_warm": "已生成主持暖场：T台中段 → 舞台前，人物均匀站位。",
+                 "host_enter": "已生成主持上台：T台中段 → 主舞台中央。",
+                 "groom_side": "已生成新郎台侧登台：台侧 → 舞台中央，主持人避让到侧边。",
+                 "groom_t": "已生成新郎T台登场：T台下方 → 舞台中央，主持人避让到侧边。",
+                 "couple_enter": "已生成新人共同登场：双人从T台最下方走到中央，左右分开，主持人避让到侧边。",
+                 "flower": "已生成花童登场：从T台下方到舞台上新人前方一点，单独站位不重叠。",
+                 "parents_enter": "已生成双方父母登场：爸爸妈妈双人模型左右各一组，新人居中，主持人站侧边，台上共六人。"}
+        self._apply_preset(data, notes[kind])
     # ---------------- 动线 ----------------
     def toggle_path_mode(self, on):
         self.canvas.path_mode = bool(on)
         self.canvas.current_phase = self._phase
+        if on:
+            a = self.canvas.selected_actor()
+            if a is not None:
+                x, y = a.get("x", 0.5), a.get("y", 0.5)
+                paths = a.setdefault("paths", [])
+                while len(paths) <= self._phase:
+                    paths.append([])
+                paths[self._phase] = [[round(x, 4), round(y, 4)]]
+                self.canvas.update()
         self.canvas.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
         self.btn_path.setText(
             f"✎ 画动线中…（环节 {self._phase + 1}，点舞台加点）" if on
@@ -1405,7 +1678,7 @@ class RehearsalPage(QWidget):
         self._rebuild_timeline()
         self.canvas.update()
         self.lb_path.setText("已生成第 1 环节新人入场动线：从入场口沿通道走到舞台前。")
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(3)
 
     def split_current_path(self):
         """把选中人物当前环节的整条动线平均切成 N 段，分给 N 个环节"""
@@ -1523,12 +1796,20 @@ class RehearsalPage(QWidget):
         self._rebuild_timeline()
         self.timeline.set_progress(self.canvas.progress)
 
+    def _on_phase_secs_changed(self, v):
+        total = max(1, int(v)) * max(1, self.sp_phases.value())
+        self.sp_secs.blockSignals(True)
+        self.sp_secs.setValue(total)
+        self.sp_secs.blockSignals(False)
+        self._on_secs_changed(total)
+
     # ---------------- 快照 / 撤销 ----------------
     def _dump(self):
         return {
             "hall": self.canvas.hall_id,
             "look": {"blur": self.canvas.blur, "anchor": self.canvas.bg_anchor},
             "secs": self.sp_secs.value(),
+            "phase_secs": self.sp_phase_secs.value(),
             "phases": self.sp_phases.value(),
             "phase": self._phase,
             "actors": copy.deepcopy(self.canvas.actors),
@@ -1558,8 +1839,15 @@ class RehearsalPage(QWidget):
         self.sp_phases.setValue(int(d.get("phases", 1) or 1))
         self.sp_phases.blockSignals(False)
         self._phase = int(d.get("phase", 0) or 0)
+        phases = max(1, self.sp_phases.value())
+        per = int(d.get("phase_secs", 0) or 0)
+        if per <= 0:
+            per = max(1, int(round(int(d.get("secs", 3) or 3) / phases)))
+        self.sp_phase_secs.blockSignals(True)
+        self.sp_phase_secs.setValue(per)
+        self.sp_phase_secs.blockSignals(False)
         self.sp_secs.blockSignals(True)
-        self.sp_secs.setValue(int(d.get("secs", 24) or 24))
+        self.sp_secs.setValue(per * phases)
         self.sp_secs.blockSignals(False)
         self.canvas.set_phase_count(self.sp_phases.value())
         self.canvas.set_progress(0.0)

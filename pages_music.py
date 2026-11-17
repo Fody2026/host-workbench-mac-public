@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QGridLayout, QAbstractItemView, QInputDialog, QMenu, QToolButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QTreeView, QFileSystemModel,
     QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QApplication,
-    QKeySequenceEdit, QGroupBox, QStyle, QProgressDialog
+    QKeySequenceEdit, QGroupBox, QStyle, QProgressDialog, QSplitter
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -1328,13 +1328,13 @@ class MusicPage(QWidget):
         head.addWidget(b_keys)
         lay.addLayout(head)
 
-        body = QHBoxLayout()
-        body.setSpacing(10)
+        body = QSplitter(Qt.Horizontal)
+        body.setHandleWidth(8)
+        body.setChildrenCollapsible(False)
 
         # ① 播放列表栏
         pl_card = QFrame()
         pl_card.setObjectName("Card")
-        pl_card.setFixedWidth(186)
         pv = QVBoxLayout(pl_card)
         pv.setContentsMargins(12, 12, 12, 12)
         pv.setSpacing(8)
@@ -1362,18 +1362,23 @@ class MusicPage(QWidget):
         # ② 音乐文件夹预览
         fs_card = QFrame()
         fs_card.setObjectName("CardAlt")
-        fs_card.setFixedWidth(252)
         fv = QVBoxLayout(fs_card)
         fv.setContentsMargins(12, 12, 12, 12)
         fv.setSpacing(8)
         frow = QHBoxLayout()
-        lb_fs = QLabel("音乐文件")
-        lb_fs.setObjectName("SectionTitle")
+        self.ed_search = QLineEdit()
+        self.ed_search.setPlaceholderText("搜索歌曲…")
+        self.ed_search.setClearButtonEnabled(True)
+        self.ed_search.setFixedWidth(120)
+        self.ed_search.textChanged.connect(self._search_music)
         b_dir = QPushButton()
         b_dir.setIcon(icons.icon("folder", 16))
         b_dir.setFixedSize(28, 26)
         b_dir.setToolTip("选择音乐库目录")
         b_dir.clicked.connect(self.pick_dir)
+        frow.addWidget(self.ed_search)
+        lb_fs = QLabel("音乐文件")
+        lb_fs.setObjectName("SectionTitle")
         frow.addWidget(lb_fs, 1)
         frow.addWidget(b_dir)
         fv.addLayout(frow)
@@ -1396,17 +1401,17 @@ class MusicPage(QWidget):
         for c in (1, 2, 3):
             self.tree.hideColumn(c)
         fv.addWidget(self.tree, 1)
+        self.search_list = QListWidget()
+        self.search_list.setObjectName("Plain")
+        self.search_list.setVisible(False)
+        self.search_list.itemDoubleClicked.connect(self._search_play)
+        fv.addWidget(self.search_list, 1)
         self.lb_dir = QLabel("")
         self.lb_dir.setObjectName("SubTitle")
         self.lb_dir.setWordWrap(True)
         fv.addWidget(self.lb_dir)
 
-        body.addWidget(fs_card)
-        body.addWidget(pl_card)
-
         # ③ 曲目表
-        mid = QVBoxLayout()
-        mid.setSpacing(10)
         tr_card = QFrame()
         tr_card.setObjectName("Card")
         tv = QVBoxLayout(tr_card)
@@ -1458,9 +1463,14 @@ class MusicPage(QWidget):
         hint.setObjectName("SubTitle")
         hint.setWordWrap(True)
         tv.addWidget(hint)
-        mid.addWidget(tr_card, 1)
-        body.addLayout(mid, 1)
-        lay.addLayout(body, 1)
+        body.addWidget(fs_card)
+        body.addWidget(pl_card)
+        body.addWidget(tr_card)
+        body.setStretchFactor(0, 2)
+        body.setStretchFactor(1, 1)
+        body.setStretchFactor(2, 6)
+        body.setSizes([260, 190, 820])
+        lay.addWidget(body, 1)
 
         # 底部控制条
         ctl = QFrame()
@@ -1728,6 +1738,38 @@ class MusicPage(QWidget):
     # ---------- 状态 ----------
     def _status(self, msg):
         self.lb_status.setText(msg)
+
+    def _search_music(self, text):
+        q = (text or "").strip().lower()
+        if not q:
+            self.tree.setVisible(True)
+            self.search_list.setVisible(False)
+            return
+        root = self.fs_model.rootPath()
+        hits = []
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                fp = os.path.join(dirpath, f)
+                if is_audio(fp) and q in f.lower():
+                    hits.append(fp)
+                    if len(hits) >= 200:
+                        break
+            if len(hits) >= 200:
+                break
+        self.search_list.clear()
+        for p in hits:
+            it = QListWidgetItem(os.path.basename(p))
+            it.setToolTip(p)
+            it.setData(Qt.UserRole, p)
+            self.search_list.addItem(it)
+        self.tree.setVisible(False)
+        self.search_list.setVisible(True)
+        self.lb_dir.setText(f"搜索“{text.strip()}”：{len(hits)} 首")
+
+    def _search_play(self, item):
+        p = item.data(Qt.UserRole)
+        if p and os.path.exists(p):
+            self._play_files([p])
 
     def _set_root(self, d):
         os.makedirs(d, exist_ok=True)

@@ -28,21 +28,21 @@ from common import (DB, APP_NAME, APP_VERSION, data_dir, asset_path,
 logger = logging.getLogger(__name__)
 
 WINDOW_QSS = """
-* { font-family: "PingFang SC", "Segoe UI Variable Text", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; }
+* { font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI"; }
 QMainWindow, QWidget#Root { background: #111318; }
-QWidget { color: #E8E6E1; font-size: 13px; }
+QWidget { color: #E8E6E1; font-size: 14px; }
 QToolTip { background: #1A1D24; color: #E8E6E1; border: 1px solid #C9A86A; padding: 5px 8px; border-radius: 6px; }
 
 QFrame#Card { background: #1A1D24; border: 1px solid #262A33; border-radius: 18px; }
 QFrame#CardAlt { background: #151820; border: 1px solid #262A33; border-radius: 18px; }
 QFrame#PlayerBar { background: #151820; border: 1px solid #262A33; border-radius: 18px; }
 
-QLabel#Title { font-size: 24px; font-weight: 700; color: #F2EFE8; letter-spacing: 0.5px; }
+QLabel#Title { font-size: 25px; font-weight: 700; color: #F2EFE8; letter-spacing: 0.5px; }
 QLabel#Body { color: #E8E6E1; }
-QLabel#SubTitle { font-size: 12px; color: #8D919B; }
-QLabel#SectionTitle { font-size: 14px; font-weight: 600; color: #E8E6E1; }
+QLabel#SubTitle { font-size: 13px; color: #8D919B; }
+QLabel#SectionTitle { font-size: 15px; font-weight: 600; color: #E8E6E1; }
 QLabel#Gold { color: #C9A86A; }
-QLabel#BigNum { font-size: 28px; font-weight: 700; color: #C9A86A; }
+QLabel#BigNum { font-size: 29px; font-weight: 700; color: #C9A86A; }
 
 QPushButton {
     background: #232833; color: #E8E6E1; border: 1px solid #262A33;
@@ -106,7 +106,7 @@ QSlider::handle:horizontal:hover { background: #D8BA82; }
 #Side { background: #0D0F13; border-right: 1px solid #262A33; }
 QListWidget#Nav {
     background: #0D0F13; border: none; outline: none; color: #9DA1AB;
-    font-size: 15px;
+    font-size: 16px;
 }
 QListWidget#Nav::item {
     padding-left: 20px; border-left: 3px solid transparent;
@@ -200,7 +200,7 @@ class RegionBar(QWidget):
                 p.drawRoundedRect(QRectF(x, 2, max(seg - 2, 2), 12), 6, 6)
             x += seg
         # 图例
-        p.setFont(QFont("Microsoft YaHei UI", 8))
+        p.setFont(QFont("Noto Sans CJK SC", 9))
         lx = 0
         for k in ("市区", "省内", "省外"):
             p.setBrush(QBrush(QColor(colors[k])))
@@ -808,7 +808,6 @@ NAV_ITEMS = [
     ("预演沙盘", "stage"), ("备忘提醒", "memo"), ("主持助理", "ai"),
     ("备婚工具", "prep"),
     ("音乐播放器", "music"), ("设置", "settings"),
-    ("开发者选项", "dev"),
 ]
 
 
@@ -994,7 +993,7 @@ class MainWindow(QMainWindow):
         from pages_rehearsal import RehearsalPage
         from pages_music import MusicPage
         from pages_media import SettingsPage
-        from pages_misc import MemoPage, AIWriterPage, DeveloperPage
+        from pages_misc import MemoPage, AIWriterPage
         from pages_prep import PrepPage
 
         self.dashboard = DashboardPage(db)
@@ -1006,11 +1005,10 @@ class MainWindow(QMainWindow):
         self.prep = PrepPage(db)
         self.music = MusicPage()
         self.settings = SettingsPage()
-        self.dev = DeveloperPage(db)
 
         self.pages = [self.dashboard, self.calendar, self.design, self.rehearsal,
                       self.memo, self.ai_page, self.prep,
-                      self.music, self.settings, self.dev]
+                      self.music, self.settings]
         for p in self.pages:
             self.stack.addWidget(p)
 
@@ -1368,8 +1366,27 @@ class OnboardingWizard(QDialog):
         self.db = db
         self.imported = False
         self.setWindowTitle("欢迎使用主持人工作台 · 首次设置")
-        self.resize(720, 520)
+        self.resize(840, 640)
         self.setStyleSheet(WINDOW_QSS)
+        try:
+            t = theme.THEMES.get(theme.current_theme(), theme.THEMES["暗夜金"])
+            self.setObjectName("Onboarding")
+            self.setStyleSheet(WINDOW_QSS + f"""
+            #Onboarding {{ background: {t['bg']}; }}
+            QLabel {{ color: {t['text']}; font-size: 16px; }}
+            QLabel#Title {{ color: {t['title']}; font-size: 27px; font-weight: 700; }}
+            QLabel#SectionTitle {{ color: {t['text']}; font-size: 19px; font-weight: 600; }}
+            QLabel#SubTitle {{ color: {t['sub']}; font-size: 16px; }}
+            QLineEdit, QComboBox {{ color: {t['text']}; background: {t['input']};
+                border: 1px solid {t['border']}; border-radius: 7px; padding: 8px 10px; font-size: 16px; }}
+            QPushButton {{ color: {t['text']}; background: {t['btn']};
+                border: 1px solid {t['border']}; border-radius: 8px; padding: 9px 15px; font-size: 16px; }}
+            QPushButton:hover {{ background: {t['btn_hover']}; }}
+            QPushButton#GoldBtn {{ background: {t['accent']}; color: #101216; font-weight: 700; }}
+            QPushButton#GoldBtn:hover {{ background: {t['accent_hover']}; }}
+            """)
+        except Exception:
+            pass
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 20)
         root.setSpacing(14)
@@ -1493,6 +1510,34 @@ class OnboardingWizard(QDialog):
         v.addStretch(1)
         self.stack.addWidget(w)
 
+        # 7 备婚工具导入表格
+        w, v = self._page("⑧ 备婚工具：导入自己的表格",
+            "左侧「备婚工具」→「导入文档/表格」，选择你自己的 Excel / CSV / Word 模板。\n"
+            "以「物品清单」为例：导入后可以直接在原有表格上改，不用从零填。")
+        v.addWidget(QLabel("建议先准备好：物品清单.xlsx、流程表.xlsx 或供应商表。"))
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 8 主持助理学习写法 + 客户问卷
+        w, v = self._page("⑨ 主持助理：让 AI 学习你的写法",
+            "打开「主持助理」：\n"
+            "· 点「上传文档」上传你过去的主持词，AI 会学习你的句式、节奏和口头禅；\n"
+            "· 点「上传客户问卷」上传新人问卷，写「开场白 / 完整主持词」时会自动参考。")
+        v.addWidget(QLabel("建议先上传 2–3 篇自己最满意的旧稿，再上传一份真实问卷试写。"))
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
+        # 9 沙盘场景 + 手绘动线 + 保存预设
+        w, v = self._page("⑩ 预演沙盘：场景 + 手绘动线 + 保存预设",
+            "打开「预演沙盘」：\n"
+            "· 在「场景」里选择宴会厅底图；\n"
+            "· 在「人物」里让新人、父母、花童上场；\n"
+            "· 在「手绘动线」里直接拖动人物，软件会记录移动轨迹；\n"
+            "· 点「保存当前动线预设」，自己起名字，下次双击即可复用。")
+        v.addWidget(QLabel("拖动人物时先点一下选中，再按住拖动，松手即生成动线。"))
+        v.addStretch(1)
+        self.stack.addWidget(w)
+
     def pick_dir(self, edit, title):
         d = QFileDialog.getExistingDirectory(self, title, edit.text() or data_dir())
         if d:
@@ -1511,7 +1556,7 @@ class OnboardingWizard(QDialog):
     def refresh(self):
         self.stack.setCurrentIndex(self.idx)
         self.back_btn.setEnabled(self.idx > 0)
-        self.skip_btn.setVisible(self.idx in (1, 5, 6))
+        self.skip_btn.setVisible(self.idx in (1, 5, 6, 7, 8, 9))
         self.next_btn.setText("完成" if self.idx == self.stack.count()-1 else "下一步")
 
     def back(self):

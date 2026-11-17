@@ -90,7 +90,7 @@ class TextItem(QGraphicsTextItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setDefaultTextColor(QColor("#F5F0E6"))
-        f = QFont("Microsoft YaHei UI")
+        f = QFont("Noto Sans CJK SC")
         f.setPixelSize(64)
         self.setFont(f)
         self.setTextWidth(900)
