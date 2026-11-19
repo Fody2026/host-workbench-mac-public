@@ -900,6 +900,55 @@ class ShortcutDialog(QDialog):
         return self.cfg
 
 
+class MacNowPlaying:
+    """macOS 媒体键接管：注册为 Now Playing，接收播放/暂停、上一首、下一首。"""
+
+    def __init__(self, page):
+        self.page = page
+        self.ok = False
+        self.handlers = []
+        self.info_center = None
+        try:
+            import MediaPlayer
+            import Foundation
+            self.MP = MediaPlayer
+            self.NS = Foundation
+            center = MediaPlayer.MPRemoteCommandCenter.sharedCommandCenter()
+            def bind(cmd, fn):
+                def handler(_event):
+                    QTimer.singleShot(0, fn)
+                    return 0
+                token = cmd.addTargetWithHandler_(handler)
+                self.handlers.append(token)
+            bind(center.playCommand(), page.toggle_play)
+            bind(center.pauseCommand(), page.toggle_play)
+            bind(center.togglePlayPauseCommand(), page.toggle_play)
+            bind(center.nextTrackCommand(), page.play_next)
+            bind(center.previousTrackCommand(), page.play_prev)
+            self.info_center = MediaPlayer.MPNowPlayingInfoCenter.defaultCenter()
+            self.ok = True
+        except Exception as e:
+            try:
+                logging.getLogger(__name__).info("macOS 媒体键不可用: %s", e)
+            except Exception:
+                pass
+
+    def update(self, title="", playing=False, duration=0, position=0):
+        if not self.ok:
+            return
+        try:
+            info = self.NS.NSMutableDictionary.dictionary()
+            if title:
+                info[self.MP.MPMediaItemPropertyTitle] = title
+            info[self.MP.MPMediaItemPropertyPlaybackDuration] = float(duration) / 1000.0
+            info[self.MP.MPNowPlayingInfoPropertyElapsedPlaybackTime] = float(position) / 1000.0
+            info[self.MP.MPNowPlayingInfoPropertyPlaybackRate] = 1.0 if playing else 0.0
+            self.info_center.setNowPlayingInfo_(info)
+            self.info_center.setPlaybackState_(1 if playing else 2)
+        except Exception:
+            pass
+
+
 class MusicSearchDialog(QDialog):
     """在线搜索 + 下载，保存到可配置目录"""
 
@@ -1319,6 +1368,7 @@ class MusicPage(QWidget):
         self._build_ui()
         self._init_player()
         self.media_hook = MediaKeyHook(self._on_media_key)
+        self.mac_media = MacNowPlaying(self) if sys.platform == "darwin" else None
         self._load_lists()
         self._set_root(get_setting("music_dir", "") or os.path.join(data_dir(), "music"))
         self._load_tracks()
@@ -2341,6 +2391,7 @@ class MusicPage(QWidget):
         if play:
             self.player.play()
         self.player.setPlaybackRate(float(st.get("speed", 1.0)))
+        self._update_mac_now_playing(True)
 
     def set_volume(self, v):
         self.sl_vol.setValue(int(v))
@@ -2401,6 +2452,7 @@ class MusicPage(QWidget):
                          "gain": int(st.get("gain", 100))}
         self.player.play()
         self.player.setPlaybackRate(float(st.get("speed", 1.0)))
+        self._update_mac_now_playing(True)
         self.b_play.setIcon(icons.icon("pause", 22, "#14161B"))
         self.sp_speed.blockSignals(True)
         self.sp_speed.setValue(float(st.get("speed", 1.0)))
@@ -2439,16 +2491,29 @@ class MusicPage(QWidget):
             else:
                 self.stop()
 
+    def _update_mac_now_playing(self, playing=None):
+        if not getattr(self, "mac_media", None):
+            return
+        playing = (self.player.playbackState() == QMediaPlayer.PlayingState) if playing is None else playing
+        title = self.track_title(self.cur_path) if self.cur_path else ""
+        try:
+            dur = self._dur(self.cur_path) if self.cur_path else 0
+        except Exception:
+            dur = 0
+        self.mac_media.update(title, playing, dur, self.player.position())
+
     def toggle_play(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self._fade_start(-1, 0)  # 暂停时直接停
             self.player.pause()
             self.b_play.setIcon(icons.icon("play", 22, "#14161B"))
+            self._update_mac_now_playing(False)
         else:
             if not self.player.source().isEmpty():
                 self.player.play()
                 self.player.setPlaybackRate(self.sp_speed.value())
                 self.b_play.setIcon(icons.icon("pause", 22, "#14161B"))
+                self._update_mac_now_playing(True)
             elif self.table.rowCount():
                 self.play_row(0)
 
