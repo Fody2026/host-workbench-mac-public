@@ -19,7 +19,8 @@ workflows:
             --collect-submodules mutagen \
             --collect-submodules docx \
             --collect-submodules cryptography \
-            --collect-submodules MediaPlayer --collect-submodules Foundation \
+            --collect-all MediaPlayer --hidden-import MediaPlayer \
+            --collect-submodules Foundation \
             --collect-submodules AppKit --collect-submodules objc \
             app.py
     artifacts:
