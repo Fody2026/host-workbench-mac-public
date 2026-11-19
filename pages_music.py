@@ -13,9 +13,10 @@ import logging
 import subprocess
 import ctypes
 import ctypes.wintypes
+import copy
 
 from PySide6.QtCore import Qt, QUrl, QTimer, QSize, QDir, QModelIndex, QMimeData, QItemSelection, QItemSelectionModel, QPoint
-from PySide6.QtGui import QFont, QAction, QIcon, QKeySequence, QShortcut, QDrag, QPainter, QColor, QPen, QPixmap, QPolygon
+from PySide6.QtGui import QFont, QAction, QIcon, QKeySequence, QShortcut, QDrag, QPainter, QColor, QPen, QPixmap, QPolygon, QCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox,
     QSlider, QLineEdit, QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox,
@@ -426,6 +427,26 @@ class PlayTable(QTableWidget):
         self._ind_timer = QTimer(self)
         self._ind_timer.setInterval(90)
         self._ind_timer.timeout.connect(self._tick_indicator)
+        self._auto_dir = 0
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(35)
+        self._auto_timer.timeout.connect(self._auto_scroll_tick)
+
+    def _auto_scroll_tick(self):
+        pos = self.viewport().mapFromGlobal(QCursor.pos())
+        if pos.y() < 34:
+            d = -1
+        elif pos.y() > self.viewport().height() - 34:
+            d = 1
+        else:
+            d = 0
+        self._auto_dir = d
+        if not d:
+            return
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.value() + d * 3)
+        row = self.indexAt(pos).row()
+        self._set_drop_row(row if row >= 0 else self.rowCount())
 
     def _tick_indicator(self):
         self._ind_phase = (self._ind_phase + 1) % 20
@@ -445,7 +466,9 @@ class PlayTable(QTableWidget):
         self.viewport().update()
 
     def dragLeaveEvent(self, e):
-        self._clear_drop()
+        # 指针拖出列表底部时仍要继续自动滚动，不能在这里停掉定时器
+        self._auto_timer.start()
+        super().dragLeaveEvent(e)
         super().dragLeaveEvent(e)
 
     def paintEvent(self, ev):
@@ -465,6 +488,26 @@ class PlayTable(QTableWidget):
         p.drawPolygon(QPolygon([QPoint(0, y), QPoint(10, y - 6), QPoint(10, y + 6)]))
         p.end()
 
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Delete:
+            self.page.remove_selected()
+            return
+        if ev.modifiers() & Qt.ControlModifier:
+            k = ev.key()
+            if k == Qt.Key_C:
+                self.page.copy_tracks(); return
+            if k == Qt.Key_X:
+                self.page.cut_tracks(); return
+            if k == Qt.Key_V:
+                self.page.paste_tracks(); return
+            if k == Qt.Key_Z:
+                self.page.undo_lists(); return
+            if k == Qt.Key_S:
+                self.page.quick_save(); return
+            if k == Qt.Key_A:
+                self.selectAll(); return
+        super().keyPressEvent(ev)
+
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls() or e.mimeData().hasFormat(self.MIME):
             e.acceptProposedAction()
@@ -473,10 +516,20 @@ class PlayTable(QTableWidget):
 
     def dragMoveEvent(self, e):
         if e.mimeData().hasUrls() or e.mimeData().hasFormat(self.MIME):
-            row = self.indexAt(e.position().toPoint()).row()
+            p = e.position().toPoint()
+            row = self.indexAt(p).row()
             if row < 0:
                 row = self.rowCount()
             self._set_drop_row(row)
+            if p.y() < 34:
+                self._auto_dir = -1
+                self._auto_timer.start()
+            elif p.y() > self.viewport().height() - 34:
+                self._auto_dir = 1
+                self._auto_timer.start()
+            else:
+                self._auto_dir = 0
+                self._auto_timer.start()
             e.acceptProposedAction()
         else:
             super().dragMoveEvent(e)
@@ -495,6 +548,7 @@ class PlayTable(QTableWidget):
         self._drag_rows = rows
         mime = QMimeData()
         mime.setData(self.MIME, json.dumps({"from": self.page.lib.current, "paths": paths}).encode("utf-8"))
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
         mime.setText("\n".join(paths))
         drag = QDrag(self)
         drag.setMimeData(mime)
@@ -516,17 +570,18 @@ class PlayTable(QTableWidget):
         pnt.end()
         drag.setPixmap(pix)
         drag.setHotSpot(QPoint(18, 18))
-        drag.exec(Qt.MoveAction | Qt.CopyAction)
+        self._auto_dir = 0
+        self._auto_timer.start()
+        drag.exec(Qt.CopyAction)
+        self._auto_dir = 0
+        self._auto_timer.stop()
         self._clear_drop()
 
     def dropEvent(self, e):
+        self._auto_dir = 0
+        self._auto_timer.stop()
         self._clear_drop()
-        if e.mimeData().hasUrls():
-            paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
-            if paths:
-                self.page.add_to_list(paths)
-                e.acceptProposedAction()
-            return
+        # 先处理软件内部拖动：内部是排序，不是复制
         if e.mimeData().hasFormat(self.MIME):
             try:
                 data = json.loads(bytes(e.mimeData().data(self.MIME)).decode("utf-8"))
@@ -541,6 +596,13 @@ class PlayTable(QTableWidget):
                 e.acceptProposedAction()
             except Exception:
                 e.ignore()
+            return
+        # 从软件外拖文件进来才是新增
+        if e.mimeData().hasUrls():
+            paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+            if paths:
+                self.page.add_to_list(paths)
+                e.acceptProposedAction()
             return
         super().dropEvent(e)
 
@@ -1251,6 +1313,8 @@ class MusicPage(QWidget):
         self.hotkey = HotkeyListener()
         self._local_shortcuts = []
         self._global_ids = []
+        self._undo_stack = []
+        self._clip_tracks = []
         self._shortcut_cfg = self._load_shortcut_cfg()
         self._build_ui()
         self._init_player()
@@ -1421,19 +1485,10 @@ class MusicPage(QWidget):
         self.lb_cur_list = QLabel("默认列表")
         self.lb_cur_list.setObjectName("SectionTitle")
         self.lb_cur_list.setMinimumWidth(120)
-        b_del = QPushButton("移除")
-        b_del.clicked.connect(self.remove_selected)
-        b_up = QPushButton("上移")
-        b_up.clicked.connect(lambda: self.move_selected(-1))
-        b_down = QPushButton("下移")
-        b_down.clicked.connect(lambda: self.move_selected(1))
         b_cfg = QPushButton("曲目设置")
         b_cfg.setObjectName("Primary")
         b_cfg.clicked.connect(self.edit_selected_track)
         trow.addWidget(self.lb_cur_list, 1)
-        trow.addWidget(b_del)
-        trow.addWidget(b_up)
-        trow.addWidget(b_down)
         trow.addWidget(b_cfg)
         tv.addLayout(trow)
 
@@ -1769,7 +1824,55 @@ class MusicPage(QWidget):
     def _search_play(self, item):
         p = item.data(Qt.UserRole)
         if p and os.path.exists(p):
-            self._play_files([p])
+            self.play_path(p)
+
+    def _remember_lists(self):
+        self._undo_stack.append((copy.deepcopy(self.lib.lists), self.lib.current))
+        if len(self._undo_stack) > 30:
+            self._undo_stack.pop(0)
+
+    def copy_tracks(self):
+        lst = self.lib.lists[self.lib.current]
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        self._clip_tracks = [lst["items"][r] for r in rows if 0 <= r < len(lst["items"])]
+        if self._clip_tracks:
+            self._status(f"已复制 {len(self._clip_tracks)} 首到剪贴板")
+
+    def cut_tracks(self):
+        self.copy_tracks()
+        if self._clip_tracks:
+            self.remove_selected()
+
+    def paste_tracks(self):
+        if not self._clip_tracks:
+            return
+        self._remember_lists()
+        lst = self.lib.lists[self.lib.current]
+        start = self.table.rowCount()
+        for p in self._clip_tracks:
+            if os.path.exists(p):
+                lst["items"].append(p)
+        self.lib.save()
+        self._load_tracks()
+        for r in range(start, self.table.rowCount()):
+            self.table.selectRow(r)
+        self._status(f"已粘贴 {len(self._clip_tracks)} 首")
+
+    def undo_lists(self):
+        if not self._undo_stack:
+            self._status("没有可撤销的操作")
+            return
+        lists, cur = self._undo_stack.pop()
+        self.lib.lists = lists
+        self.lib.current = cur
+        self.lib.save()
+        self._load_lists()
+        self._load_tracks()
+        self._status("已撤销上一步")
+
+    def quick_save(self):
+        self.lib.save()
+        self._status("歌单已保存")
 
     def _set_root(self, d):
         os.makedirs(d, exist_ok=True)
@@ -1896,6 +1999,7 @@ class MusicPage(QWidget):
 
     def move_tracks_within(self, paths, row):
         """在当前播放列表内拖拽排序：把 paths 移到 row 位置。"""
+        self._remember_lists()
         if not paths or not self.lib.lists:
             return
         lst = self.lib.lists[self.lib.current]
@@ -1977,6 +2081,7 @@ class MusicPage(QWidget):
         return len(paths)
 
     def add_to_list(self, paths, row_hint=None):
+        self._remember_lists()
         lst = self.lib.lists[self.lib.current]
         added = 0
         for p in paths:
@@ -2035,6 +2140,7 @@ class MusicPage(QWidget):
         self.add_to_list(copied)
 
     def remove_selected(self):
+        self._remember_lists()
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
         if not rows:
             return
@@ -2046,6 +2152,7 @@ class MusicPage(QWidget):
         self._load_tracks()
 
     def move_selected(self, delta):
+        self._remember_lists()
         rows = sorted({i.row() for i in self.table.selectedIndexes()})
         if not rows:
             return
@@ -2103,9 +2210,7 @@ class MusicPage(QWidget):
     def _tree_play(self, idx):
         p = self.fs_model.filePath(idx)
         if is_audio(p):
-            if self.add_to_list([p]):
-                self.table.selectRow(self.table.rowCount() - 1)
-                self.play_row(self.table.rowCount() - 1)
+            self.play_path(p)
 
     def _file_menu(self, pos):
         idx = self.tree.indexAt(pos)
@@ -2119,7 +2224,7 @@ class MusicPage(QWidget):
                          if is_audio(os.path.join(p, f))]
         m = QMenu(self)
         if paths:
-            m.addAction("播放", lambda: self._play_files(paths))
+            m.addAction("播放", lambda: self.play_path(paths[0]) if paths else None)
             m.addAction("加入当前列表", lambda: self.add_to_list(paths))
             m.addSeparator()
             m.addAction("复制", lambda: self._set_clip("copy", paths))
@@ -2270,9 +2375,11 @@ class MusicPage(QWidget):
         lst = self.lib.lists[self.lib.current]
         if not (0 <= row < len(lst["items"])):
             return
-        path = lst["items"][row]
-        if not os.path.exists(path):
-            QMessageBox.warning(self, "文件不存在", path)
+        self.play_path(lst["items"][row], row)
+
+    def play_path(self, path, row=-1):
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "文件不存在", str(path))
             return
         self.cur_row = row
         self.cur_path = path

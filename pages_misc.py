@@ -8,7 +8,7 @@ import logging
 import threading
 
 from PySide6.QtCore import Qt, QThread, Signal, QDate, QTime, QTimer
-from PySide6.QtGui import QFont, QColor, QIcon, QPixmap
+from PySide6.QtGui import QFont, QColor, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
     QComboBox, QSpinBox, QDateEdit, QTimeEdit, QLineEdit, QTextEdit, QPlainTextEdit,
@@ -681,13 +681,20 @@ class AIWriterPage(QWidget):
         self._last_reply = ""
         self.history = []
         self._images = []
-        self._mode = "opening"
+        self._mode = "ask"
         self._q_text = ""
         self._q_name = ""
         _ensure_style_dir()
+        self._typing_timer = QTimer(self)
+        self._typing_timer.setInterval(18)
+        self._typing_timer.timeout.connect(self._typing_tick)
+        self._typing_text = ""
+        self._typing_pos = 0
+        self._typing_cursor = None
         self._build()
         self._refresh_docs()
         self._refresh_status()
+        self._set_mode("ask")
         # 每次启动/新对话的第一条回复固定先问称呼；用户答完记住
         self._await_name = True
         QTimer.singleShot(120, lambda: self._append_chat("a", "好呀，请问我该怎么称呼您？"))
@@ -929,12 +936,13 @@ class AIWriterPage(QWidget):
         sb.setValue(sb.maximum())
 
     def _set_mode(self, mode):
-        self._mode = mode if mode in ("opening", "full", "creative") else "opening"
+        self._mode = mode if mode in ("ask", "opening", "full", "creative") else "ask"
         for b, key in ((self.btn_full, "full"), (self.btn_creative, "creative")):
             b.blockSignals(True)
             b.setChecked(self._mode == key)
             b.blockSignals(False)
-        self.status.setText({"opening": "默认模式 · 开场白",
+        self.status.setText({"ask": "默认 · 先问你想写什么",
+                             "opening": "已选 · 开场白",
                              "full": "已选 · 完整主持词",
                              "creative": "已选 · 创意环节"}[self._mode])
 
@@ -983,7 +991,9 @@ class AIWriterPage(QWidget):
         self._q_name = os.path.basename(path)
         self.lb_questionnaire.setText(f"已上传：{self._q_name}（{len(self._q_text)} 字）")
         self.lb_questionnaire.setStyleSheet("")
-        self._fill_input("已读取客户问卷，请根据问卷信息帮我写主持词。")
+        self.ed_input.clear()
+        self._set_mode("ask")
+        self._append_chat("a", "问卷已收到。你想先交流哪一块：开场白、完整主持词，还是创意环节？")
 
     def clear_questionnaire(self):
         self._q_text = ""
@@ -996,7 +1006,8 @@ class AIWriterPage(QWidget):
         return "【客户问卷（已上传）】\n" + self._q_text[:12000] + "\n"
 
     def _system_prompt(self):
-        mode_txt = {"opening": "只写开场白，不要写完整流程，不要给创意清单。",
+        mode_txt = {"ask": "先不要写正文。用一两句话问用户这次想交流什么、想撰写哪部分（开场白 / 完整主持词 / 创意环节），等他选择后再写。",
+                    "opening": "只写开场白，不要写完整流程，不要给创意清单。",
                     "full": "写完整主持词，按环节分段，可直接照读。",
                     "creative": "只给创意环节清单，每条写清怎么做、需要什么道具。"}[getattr(self, "_mode", "opening")]
         lines = [
@@ -1052,6 +1063,13 @@ class AIWriterPage(QWidget):
             return
         if not text:
             text = "请先理解这张图片的内容，再从婚礼主持的角度告诉我可以怎么用。"
+        if getattr(self, "_mode", "ask") == "ask":
+            if "完整主持词" in text or "完整稿" in text:
+                self._set_mode("full")
+            elif "创意" in text or "环节" in text:
+                self._set_mode("creative")
+            elif "开场白" in text or "开场词" in text:
+                self._set_mode("opening")
         cfg = self._require_model()
         if not cfg:
             return
@@ -1075,6 +1093,35 @@ class AIWriterPage(QWidget):
         self.btn_send.setEnabled(not busy)
         self.btn_send.setText("思考中…" if busy else "发送")
 
+    def _start_typing(self, text):
+        self._typing_timer.stop()
+        self._typing_text = text
+        self._typing_pos = 0
+        self.chat.moveCursor(QTextCursor.End)
+        cur = self.chat.textCursor()
+        cur.insertHtml("<p style='margin:6px 0'><b style='color:#7FA98E'>AI</b><br/></p>")
+        self._typing_cursor = cur
+        self._set_busy(True)
+        self.status.setText("正在逐字输出…")
+        self._typing_timer.start()
+
+    def _typing_tick(self):
+        if self._typing_cursor is None or self._typing_pos >= len(self._typing_text):
+            self._typing_timer.stop()
+            self._typing_cursor = None
+            self._set_busy(False)
+            self.status.setText(f"已回复 · {len(self._last_reply.replace(' ', ''))} 字")
+            return
+        ch = self._typing_text[self._typing_pos]
+        self._typing_pos += 1
+        if ch == "\n":
+            self._typing_cursor.insertBlock()
+        else:
+            self._typing_cursor.insertText(ch)
+        self.chat.setTextCursor(self._typing_cursor)
+        sb = self.chat.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def _on_ok(self, text):
         self._set_busy(False)
         text = (text or "").strip()
@@ -1082,8 +1129,7 @@ class AIWriterPage(QWidget):
             return
         self._last_reply = text
         self.history.append(("a", text))
-        self._append_chat("a", text)
-        self.status.setText(f"已回复 · {len(text.replace(' ', ''))} 字")
+        self._start_typing(text)
 
     def _on_err(self, err):
         self._set_busy(False)
@@ -1097,6 +1143,10 @@ class AIWriterPage(QWidget):
                             f"{err}{extra}\n\n也可在「连接设置」里测试接口，或换成本地模型。")
 
     def clear_chat(self):
+        try:
+            self._typing_timer.stop()
+        except Exception:
+            pass
         self.chat.clear()
         self.history = []
         self._last_reply = ""
