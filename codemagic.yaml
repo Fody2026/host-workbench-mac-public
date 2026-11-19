@@ -11,7 +11,7 @@ workflows:
         script: |
           python3 --version
           python3 -m pip install --upgrade pip
-          python3 -m pip install PySide6 mutagen python-docx cryptography pyinstaller
+          python3 -m pip install PySide6 mutagen python-docx cryptography pyinstaller pyobjc-framework-MediaPlayer pyobjc-framework-Cocoa
       - name: Build .app
         script: |
           python3 -m PyInstaller --noconfirm --windowed --name "主持人工作台" \
@@ -19,6 +19,8 @@ workflows:
             --collect-submodules mutagen \
             --collect-submodules docx \
             --collect-submodules cryptography \
+            --collect-submodules MediaPlayer --collect-submodules Foundation \
+            --collect-submodules AppKit --collect-submodules objc \
             app.py
     artifacts:
       - dist/*.app
