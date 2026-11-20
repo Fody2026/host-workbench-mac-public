@@ -50,7 +50,7 @@ def available_fonts():
     if QApplication.instance() is None:
         return names or ["Microsoft YaHei UI"]
     sys_names = QFontDatabase.families()
-    prefer = ["Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑", "苹方", "PingFang SC",
+    prefer = ["MiSans", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑", "苹方", "PingFang SC",
               "SimHei", "黑体", "SimSun", "宋体", "KaiTi", "楷体", "FangSong", "仿宋",
               "LiSu", "隶书", "YouYuan", "幼圆", "STXingkai", "华文行楷", "STLiti",
               "华文隶书", "STCaizi", "华文彩云",

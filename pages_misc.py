@@ -139,6 +139,7 @@ class MemoPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(42)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.itemDoubleClicked.connect(self.edit_row)
@@ -205,6 +206,15 @@ class MemoPage(QWidget):
         done = 1 if it.text() != "✓" else 0
         self.db.update_memo(mid, done=done)
         self.refresh()
+
+    def select_memo(self, memo_id):
+        self.refresh()
+        for row, m in enumerate(getattr(self, "memos", [])):
+            if m.get("id") == memo_id:
+                self.table.selectRow(row)
+                self.table.scrollToItem(self.table.item(row, 2), QAbstractItemView.PositionAtCenter)
+                self.table.setFocus()
+                break
 
     def add(self):
         dlg = MemoDialog(self.db, None, self)
@@ -765,7 +775,7 @@ class AIWriterPage(QWidget):
         self.chat.setOpenExternalLinks(False)
         self.chat.setPlaceholderText("直接说你要什么：写开场白、写完整主持词、想 12 个创意环节、改一版……")
         self.chat.setStyleSheet("QTextBrowser{background:transparent;border:none;}")
-        self.chat.setFont(QFont("Noto Sans CJK SC", 12))
+        self.chat.setFont(QFont("MiSans", 13))
         lv.addWidget(self.chat, 1)
 
         self.img_bar = QWidget()
@@ -806,7 +816,7 @@ class AIWriterPage(QWidget):
         lb_mode = QLabel("写作模式")
         lb_mode.setObjectName("SectionTitle")
         sv.addWidget(lb_mode)
-        lb_hint = QLabel("不选则默认写开场白")
+        lb_hint = QLabel("不选则先问你想写什么")
         lb_hint.setObjectName("SubTitle")
         lb_hint.setWordWrap(True)
         sv.addWidget(lb_hint)
@@ -930,7 +940,7 @@ class AIWriterPage(QWidget):
         color = "#C9A86A" if who == "u" else "#7FA98E"
         label = "你" if who == "u" else "AI"
         self.chat.append(
-            f"<p style='margin:6px 0'><b style='color:{color}'>{label}</b><br/>"
+            f"<p style='margin:7px 0; line-height:165%'><b style='color:{color}'>{label}</b><br/>"
             f"{self._esc(text)}</p>")
         sb = self.chat.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -1755,10 +1765,10 @@ class DeveloperPage(QWidget):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("数据目录"))
         lbl_dir = QLabel(data_dir())
-        lbl_dir.setStyleSheet("color:#8D919B;font-size:12px;")
+        lbl_dir.setObjectName("SubTitle")
         row2.addWidget(lbl_dir)
         b_open = QPushButton("打开")
-        b_open.clicked.connect(lambda: common.open_path(data_dir()))
+        b_open.clicked.connect(lambda: os.startfile(data_dir()))
         row2.addWidget(b_open)
         row2.addStretch()
         v1.addLayout(row2)
@@ -1816,7 +1826,7 @@ class DeveloperPage(QWidget):
         ]:
             lb = QLabel(line)
             lb.setWordWrap(True)
-            lb.setStyleSheet("color:#9DA1AB;font-size:12px;")
+            lb.setObjectName("SubTitle")
             v4.addWidget(lb)
         lay.addWidget(card4)
         lay.addStretch()
@@ -1830,7 +1840,7 @@ class DeveloperPage(QWidget):
     def open_log(self):
         p = os.path.join(data_dir(), "logs", "app.log")
         if os.path.exists(p):
-            common.open_path(p)
+            os.startfile(p)
         else:
             QMessageBox.information(self, "提示", "暂无日志文件")
 

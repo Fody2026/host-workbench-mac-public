@@ -1,0 +1,17 @@
+PySide6==6.8.3
+PyInstaller>=6.13,<7
+cryptography
+mutagen
+python-docx
+python-pptx
+openpyxl
+Pillow
+qrcode
+pydub
+requests
+imageio-ffmpeg
+psutil
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-MediaPlayer; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices; sys_platform == "darwin"

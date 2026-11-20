@@ -5,7 +5,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 # 每套主题包含：背景/卡片/边框/文字/辅文字/强调色/输入框/按钮/导航等
+DEFAULT_THEME = "冰蓝"
 THEMES = {
+    DEFAULT_THEME: {
+        "bg": "#EAF1FA", "card": "#FFFFFF", "card_alt": "#F7FAFF", "border": "#C3D2E5",
+        "text": "#17283F", "sub": "#44586F", "accent": "#164FBA", "accent_hover": "#174795",
+        "input": "#FFFFFF", "btn": "#F3F7FD", "btn_hover": "#DDEAFF", "soft": "#A5B9D4",
+        "nav": "#E3EEF9", "nav_sel": "#CFE1FC", "nav_hover": "#D8E7FA", "nav_text": "#364F6D",
+        "title": "#11233B", "hover_border": "#6D91BB", "danger_bg": "#FFF1F2",
+        "danger_border": "#F2CED3", "danger_text": "#982938",
+        "cell_bg": "#FFFFFF", "cell_border": "#CCD9E9", "cell_today_bg": "#DFEBFF",
+        "cell_event_bg": "#F0F6FF", "cell_event_border": "#ACC5EA",
+        "cell_out_bg": "#EEF3FA", "cell_out_border": "#D3DFED",
+    },
     "暗夜金": {
         "bg": "#0B0B0E", "card": "#16171C", "card_alt": "#111216", "border": "#26272E",
         "text": "#F5F5F7", "sub": "#8E8E93", "accent": "#0A84FF", "accent_hover": "#409CFF",
@@ -89,7 +101,7 @@ _COLOR_KEYS = {
     "#E8C7C7": "danger_text",
 }
 
-_current = "暗夜金"
+_current = DEFAULT_THEME
 
 
 def current_theme() -> str:
@@ -101,7 +113,7 @@ def build_qss(base_qss: str, name: str = None, set_current: bool = True) -> str:
     global _current
     name = name or _current
     if name not in THEMES:
-        name = "暗夜金"
+        name = DEFAULT_THEME
     t = THEMES[name]
     if set_current:
         _current = name
@@ -113,6 +125,58 @@ def build_qss(base_qss: str, name: str = None, set_current: bool = True) -> str:
         qss = qss.replace(old, token)
     for old, (token, new) in tokens.items():
         qss = qss.replace(token, new)
+    if name == DEFAULT_THEME:
+        qss = qss.replace("selection-color: #14161B", "selection-color: #FFFFFF")
+        qss = qss.replace("color: #14161B; font-weight: 600", "color: #FFFFFF; font-weight: 600")
+        qss += """
+QWidget#Root { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #F6FAFF, stop:1 #E6EFFA); }
+QWidget#Side { border: 1px solid #C3D2E5; border-radius: 22px; }
+QListWidget#Nav { background: transparent; }
+QListWidget#Nav::item { border-radius: 10px; }
+QListWidget#Nav::item:selected { color: #113E8F; font-weight: 700; }
+QFrame#PlayerBar { background: #FFFFFF; border-color: #A8BFDE; }
+QLabel#NowPlaying { color: #11233B; font-size: 18px; font-weight: 700; }
+QKeySequenceEdit { background: #FFFFFF; color: #17283F; }
+QLabel#NowPlaying { font-size: 20px; color: #11233B; }
+QLabel#PlaybackState { color: #164FBA; font-size: 13px; font-weight: 600; }
+QTableWidget#PlayTable::item { padding: 7px 8px; }
+QTableWidget#PlayTable::item:selected { background: #CFE1FC; color: #11233B; }
+QHeaderView::section { color: #44586F; }
+QWidget#Root { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #F7FAFF, stop:0.42 #EDF5FF, stop:0.72 #F7F0FA, stop:1 #FFF4EA); }
+QWidget#Side { background: rgba(255,255,255,0.58); border: 1px solid rgba(255,255,255,0.86); border-radius: 24px; }
+QFrame#Card, QFrame#CardAlt { background: rgba(255,255,255,0.72); border: 1px solid rgba(255,255,255,0.92); border-radius: 22px; }
+QFrame#PlayerBar { background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.95); border-radius: 20px; }
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QTimeEdit, QKeySequenceEdit { background: rgba(255,255,255,0.78); }
+QPushButton { background: rgba(255,255,255,0.62); border: 1px solid rgba(190,207,228,0.72); }
+QPushButton:hover { background: rgba(255,255,255,0.9); }
+QTableWidget, QListWidget#Plain, QTreeView { background: rgba(255,255,255,0.62); }
+QTableWidget#PlayTable { background: rgba(255,255,255,0.66); }
+QTabWidget::pane { background: rgba(255,255,255,0.58); }
+QHeaderView::section { background: rgba(255,255,255,0.55); }
+QPushButton#Primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #A7CBE5, stop:0.48 #7E9FC5, stop:1 #9B91C2); color:#FFFFFF; border:none; }
+QPushButton#Primary:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #B9D8EC, stop:0.48 #94B2D4, stop:1 #ADA4D2); }
+QPushButton#Primary:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #95BFD8, stop:1 #8A82B2); }
+QListWidget#Nav::item:selected { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 rgba(88,199,243,0.30), stop:1 rgba(108,99,255,0.24)); color:#113E8F; }
+QListWidget#Plain::item:selected { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #EAF3FB, stop:1 #F1EDF9); color:#11233B; }
+QTableWidget::item:selected { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+    stop:0 #E8F1FA, stop:1 #F0ECF8); color:#11233B; }
+QTableWidget#PlayTable::item:selected { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+    stop:0 #E8F1FA, stop:1 #F0ECF8); color:#11233B; }
+QTabBar::tab:selected { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+    stop:0 #EDF6FC, stop:1 #F4F0FA); color:#113E8F; }
+QSlider::sub-page:horizontal { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+    stop:0 #A7CBE5, stop:0.55 #7E9FC5, stop:1 #9B91C2); }
+QSlider::handle:horizontal { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 #FFFFFF, stop:1 #EAF4FF); border:2px solid #7E9FC5; }
+QSlider::handle:horizontal:hover { background:#FFFFFF; border-color:#9B91C2; }
+"""
     return qss
 
 

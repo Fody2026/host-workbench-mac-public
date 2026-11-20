@@ -13,7 +13,7 @@ import tempfile
 import datetime
 
 APP_NAME = "主持人工作台"
-APP_VERSION = "4.9.1"
+APP_VERSION = "5.0"
 
 
 def base_dir() -> str:
@@ -23,22 +23,23 @@ def base_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def open_path(path):
-    import subprocess
-    try:
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", str(path)])
-        elif os.name == "nt":
-            os.startfile(str(path))
-        else:
-            subprocess.Popen(["xdg-open", str(path)])
-    except Exception:
-        pass
-
-
 def data_dir() -> str:
-    """数据目录：打包后放用户本地数据区，避免污染桌面/程序目录；开发时放项目 data"""
-    if getattr(sys, "frozen", False):
+    """数据目录：打包后放用户本地数据区，避免污染程序目录；开发时放项目 data。"""
+    if sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+        d = os.path.join(base, "HostWorkbench", "data")
+        # 兼容旧 Mac 包可能使用过的目录，首次升级时只读取迁移来源。
+        legacy_dirs = [
+            os.path.join(base, "FuyaoHostTool", "data"),
+            os.path.join(os.path.expanduser("~"), "AppData", "Local", "HostWorkbench", "data"),
+            os.path.join(base, "主持人工作台", "data"),
+        ]
+        if not os.path.exists(d):
+            for old in legacy_dirs:
+                if os.path.exists(old):
+                    d = old
+                    break
+    elif getattr(sys, "frozen", False):
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
         d = os.path.join(base, "HostWorkbench", "data")
         legacy = os.path.join(base, "FuyaoHostTool", "data")
@@ -643,6 +644,9 @@ def _shared():
 def total_ram_gb() -> float:
     """返回物理内存 GB；用于低内存电脑的保护策略。"""
     try:
+        if sys.platform != "win32":
+            import psutil
+            return round(psutil.virtual_memory().total / 1024 ** 3, 1)
         import ctypes
         class MS(ctypes.Structure):
             _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
@@ -659,6 +663,9 @@ def total_ram_gb() -> float:
 
 def available_ram_gb() -> float:
     try:
+        if sys.platform != "win32":
+            import psutil
+            return round(psutil.virtual_memory().available / 1024 ** 3, 1)
         import ctypes
         class MS(ctypes.Structure):
             _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
@@ -701,7 +708,7 @@ def list_models(base: str, key: str, timeout: int = 15) -> list:
 
 
 def default_backup_dir() -> str:
-    """默认备份目录：Windows 为 D:\主持人工作台；macOS 为 ~/Documents/主持人工作台数据"""
+    """默认备份目录：Windows 为 D:\主持人工作台；macOS 为 ~/Documents/主持人工作台数据。"""
     if sys.platform == "darwin":
         d = os.path.join(os.path.expanduser("~"), "Documents", "主持人工作台数据")
     else:
@@ -746,35 +753,25 @@ def _parse_money(text) -> float:
         return 0.0
 
 
-def configure_ffmpeg():
-    """让 pydub 使用内置 ffmpeg（打包后位于 assets/ffmpeg.exe）"""
+def ffmpeg_path():
+    bundled = asset_path("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    if os.path.isfile(bundled):
+        return bundled
     try:
-        from pydub import AudioSegment
-        candidates = [
-            asset_path("ffmpeg.exe"),
-            os.path.join(os.path.dirname(sys.executable), "assets", "ffmpeg.exe"),
-        ]
-        for p in candidates:
-            if os.path.exists(p):
-                AudioSegment.converter = p
-                AudioSegment.ffmpeg = p
-                return p
-        # 开发环境：用 imageio_ffmpeg 提供的二进制
-        try:
-            import imageio_ffmpeg
-            p = imageio_ffmpeg.get_ffmpeg_exe()
-            if os.path.exists(p):
-                AudioSegment.converter = p
-                AudioSegment.ffmpeg = p
-                return p
-        except Exception:
-            pass
-        return None
-    except Exception:
-        return None
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        return shutil.which("ffmpeg") or "ffmpeg"
 
 
-# ---------------- 加密备份 ----------------
+def configure_ffmpeg():
+    """设置音频编辑使用当前平台的 ffmpeg。"""
+    from pydub import AudioSegment
+    path = ffmpeg_path()
+    AudioSegment.converter = path
+    return path
+
+
 def _derive_key(password: str, salt: bytes) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200000, dklen=32)
 

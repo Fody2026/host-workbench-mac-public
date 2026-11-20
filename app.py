@@ -28,9 +28,9 @@ from common import (DB, APP_NAME, APP_VERSION, data_dir, asset_path,
 logger = logging.getLogger(__name__)
 
 WINDOW_QSS = """
-* { font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI"; }
+* { font-family: "MiSans", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; }
 QMainWindow, QWidget#Root { background: #111318; }
-QWidget { color: #E8E6E1; font-size: 14px; }
+QWidget { color: #E8E6E1; font-size: 15px; font-weight: 300; }
 QToolTip { background: #1A1D24; color: #E8E6E1; border: 1px solid #C9A86A; padding: 5px 8px; border-radius: 6px; }
 
 QFrame#Card { background: #1A1D24; border: 1px solid #262A33; border-radius: 18px; }
@@ -39,8 +39,9 @@ QFrame#PlayerBar { background: #151820; border: 1px solid #262A33; border-radius
 
 QLabel#Title { font-size: 25px; font-weight: 700; color: #F2EFE8; letter-spacing: 0.5px; }
 QLabel#Body { color: #E8E6E1; }
-QLabel#SubTitle { font-size: 13px; color: #8D919B; }
-QLabel#SectionTitle { font-size: 15px; font-weight: 600; color: #E8E6E1; }
+QLabel#SubTitle { font-size: 14px; color: #8D919B; }
+QLabel#PlaybackState { font-size: 13px; font-weight: 600; }
+QLabel#SectionTitle { font-size: 16px; font-weight: 600; color: #E8E6E1; }
 QLabel#Gold { color: #C9A86A; }
 QLabel#BigNum { font-size: 29px; font-weight: 700; color: #C9A86A; }
 
@@ -106,7 +107,7 @@ QSlider::handle:horizontal:hover { background: #D8BA82; }
 #Side { background: #0D0F13; border-right: 1px solid #262A33; }
 QListWidget#Nav {
     background: #0D0F13; border: none; outline: none; color: #9DA1AB;
-    font-size: 16px;
+    font-size: 17px;
 }
 QListWidget#Nav::item {
     padding-left: 20px; border-left: 3px solid transparent;
@@ -129,7 +130,7 @@ QListWidget#Plain::item:hover { background: #171B23; }
 QTableWidget#PlayTable { background: #141720; border-radius: 14px; }
 QTableWidget#PlayTable::item { padding: 4px 8px; }
 QTableWidget#PlayTable::item:selected { background: #2B3140; color: #E9E4D8; }
-QTableWidget::item { padding: 6px; }
+QTableWidget::item { padding: 8px 10px; }
 QTableWidget::item:selected { background: #2B3140; color: #E9E4D8; }
 QHeaderView::section {
     background: #1A1D24; color: #8D919B; border: none;
@@ -168,6 +169,8 @@ QMenu::item:selected { background: #2B3140; }
 QMenu::separator { height: 1px; background: #262A33; margin: 4px 8px; }
 QScrollArea { background: transparent; border: none; }
 QScrollArea > QWidget > QWidget { background: transparent; }
+QSplitter::handle:horizontal { background: #C3D2E5; width: 10px; margin: 8px 1px; border-radius: 4px; }
+QSplitter::handle:horizontal:hover { background: #6D91BB; }
 """
 
 BASE_QSS = WINDOW_QSS
@@ -200,12 +203,12 @@ class RegionBar(QWidget):
                 p.drawRoundedRect(QRectF(x, 2, max(seg - 2, 2), 12), 6, 6)
             x += seg
         # 图例
-        p.setFont(QFont("Noto Sans CJK SC", 9))
+        p.setFont(QFont("MiSans", 9))
         lx = 0
         for k in ("市区", "省内", "省外"):
             p.setBrush(QBrush(QColor(colors[k])))
             p.drawEllipse(QRectF(lx, 22, 7, 7))
-            p.setPen(QColor("#9DA1AB"))
+            p.setPen(QColor(theme.THEMES[theme.current_theme()]["sub"]))
             p.drawText(QRectF(lx + 11, 16, 70, 20), Qt.AlignLeft | Qt.AlignVCenter,
                        f"{k} {self.data.get(k, 0)}")
             lx += 92
@@ -229,8 +232,9 @@ WEEK_CN = ["一", "二", "三", "四", "五", "六", "日"]
 
 
 class DayCell(QFrame):
-    """月历中的单日格子（单击即打开当日档期）"""
+    """月历中的单日格子：单击选中，双击打开当日档期。"""
     clicked = Signal(QDate)
+    doubleClicked = Signal(QDate)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -249,6 +253,7 @@ class DayCell(QFrame):
         lay.addWidget(self.info)
         lay.addStretch()
         self.date = None
+        self._base_qss = ""
 
     def set_day(self, date: QDate, items, in_month=True):
         self.date = date
@@ -267,6 +272,7 @@ class DayCell(QFrame):
         elif items:
             base = theme.cell_qss("event")
         self.setStyleSheet(base)
+        self._base_qss = base
         if items:
             # 日期标红 + 只显示场次类型
             self.day_label.setStyleSheet(
@@ -292,6 +298,19 @@ class DayCell(QFrame):
         if self.date is not None and ev.button() == Qt.LeftButton:
             self.clicked.emit(self.date)
         super().mouseReleaseEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        if self.date is not None and ev.button() == Qt.LeftButton:
+            self.doubleClicked.emit(self.date)
+        super().mouseDoubleClickEvent(ev)
+
+    def set_selected(self, on):
+        if on:
+            t = theme.THEMES[theme.current_theme()]
+            self.setStyleSheet(
+                f"QFrame{{background:{t['cell_today_bg']};border:2px solid {t['accent']};border-radius:8px;}}")
+        elif self._base_qss:
+            self.setStyleSheet(self._base_qss)
 
 
 class EventDialog(QDialog):
@@ -478,6 +497,7 @@ class CalendarPage(QWidget):
         self.db = db
         self.year = datetime.date.today().year
         self.month = datetime.date.today().month
+        self.selected_date = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
@@ -539,12 +559,13 @@ class CalendarPage(QWidget):
         for r in range(6):
             for c in range(7):
                 cell = DayCell()
-                cell.clicked.connect(self.open_day)
+                cell.clicked.connect(self.select_day)
+                cell.doubleClicked.connect(self.open_day)
                 grid.addWidget(cell, r + 1, c)
                 self.cells.append(cell)
         lay.addLayout(grid, 1)
 
-        tip = QLabel("单击日期即可查看 / 新增当日档期；同一天可分别记录午宴与晚宴。数据本地存储，可随时导出备份。")
+        tip = QLabel("单击选中日期，双击查看 / 新增当日档期；同一天可分别记录午宴与晚宴。数据本地存储，可随时导出备份。")
         tip.setObjectName("SubTitle")
         lay.addWidget(tip)
 
@@ -573,7 +594,7 @@ class CalendarPage(QWidget):
         v.setContentsMargins(16, 10, 16, 10)
         v.setSpacing(2)
         lb = QLabel(title)
-        lb.setStyleSheet("color:#8D919B;font-size:12px;")
+        lb.setObjectName("SubTitle")
         val = QLabel("—")
         val.setStyleSheet(f"font-size:22px;font-weight:700;color:{color};")
         v.addWidget(lb)
@@ -600,7 +621,25 @@ class CalendarPage(QWidget):
             items = self.db.events_on(d.toString("yyyy-MM-dd")) if in_month else []
             cell.set_day(d, items, in_month)
 
+    def select_day(self, date: QDate):
+        self.selected_date = date
+        for cell in self.cells:
+            cell.set_selected(cell.date == date)
+
+    def select_date(self, date_text, open_detail=False):
+        q = QDate.fromString(str(date_text), "yyyy-MM-dd")
+        if not q.isValid():
+            return
+        self.year = q.year()
+        self.month = q.month()
+        self.selected_date = q
+        self.render()
+        self.select_day(q)
+        if open_detail:
+            QTimer.singleShot(80, lambda: self.open_day(q))
+
     def open_day(self, date: QDate):
+        self.select_day(date)
         dlg = EventDialog(self.db, date, self)
         dlg.exec()
         self.render()
@@ -667,6 +706,8 @@ def QInputDialogGetText(parent, title, label):
 # ---------------- 首页 ----------------
 class DashboardPage(QWidget):
     navigate = Signal(int)
+    open_event = Signal(str)
+    open_memo = Signal(int)
 
     def __init__(self, db: DB, parent=None):
         super().__init__(parent)
@@ -708,6 +749,7 @@ class DashboardPage(QWidget):
         self.recent_list = QListWidget()
         self.recent_list.setObjectName("Plain")
         self.recent_list.setStyleSheet("background:transparent;border:none;")
+        self.recent_list.itemDoubleClicked.connect(self._open_recent)
         lv.addWidget(self.recent_list)
         mid.addWidget(left, 3)
 
@@ -721,6 +763,7 @@ class DashboardPage(QWidget):
         self.memo_list = QListWidget()
         self.memo_list.setObjectName("Plain")
         self.memo_list.setStyleSheet("background:transparent;border:none;")
+        self.memo_list.itemDoubleClicked.connect(self._open_memo)
         rv.addWidget(self.memo_list)
         mid.addWidget(right, 2)
         lay.addLayout(mid, 1)
@@ -741,13 +784,23 @@ class DashboardPage(QWidget):
 
         self.refresh()
 
+    def _open_recent(self, item):
+        date = item.data(Qt.UserRole)
+        if date:
+            self.open_event.emit(str(date))
+
+    def _open_memo(self, item):
+        mid = item.data(Qt.UserRole)
+        if mid:
+            self.open_memo.emit(int(mid))
+
     def _stat_card(self, title, value):
         card = make_card(alt=True)
         card.setMinimumHeight(86)
         v = QVBoxLayout(card)
         v.setContentsMargins(16, 12, 16, 12)
         lb = QLabel(title)
-        lb.setStyleSheet("color:#8D919B;font-size:12px;")
+        lb.setObjectName("SubTitle")
         val = QLabel(value)
         val.setObjectName("BigNum")
         v.addWidget(lb)
@@ -772,7 +825,7 @@ class DashboardPage(QWidget):
         if future:
             first = future[0]
             self.val_next.setText(f"{first['date'][5:]}  {first['client'] or '未命名'}")
-            self.val_next.setStyleSheet("font-size:15px;font-weight:600;color:#C9A86A;")
+            self.val_next.setObjectName("Gold")
         else:
             self.val_next.setText("—")
         self.val_total.setText(str(len(all_ev)))
@@ -789,7 +842,9 @@ class DashboardPage(QWidget):
         self.recent_list.clear()
         for e in future[:6]:
             txt = f"{e['date'][5:]}  ·  {e['client'] or '未命名'}   {e['venue']}"
-            self.recent_list.addItem(txt)
+            it = QListWidgetItem(txt)
+            it.setData(Qt.UserRole, e["date"])
+            self.recent_list.addItem(it)
         if not future:
             self.recent_list.addItem("暂无即将到来的档期")
 
@@ -797,7 +852,9 @@ class DashboardPage(QWidget):
         for m in open_memos[:6]:
             star = "★ " if m["important"] else ""
             due = m["due"][5:] if m["due"] else "未定时间"
-            self.memo_list.addItem(f"{star}{m['title']}   ({due})")
+            it = QListWidgetItem(f"{star}{m['title']}   ({due})")
+            it.setData(Qt.UserRole, m["id"])
+            self.memo_list.addItem(it)
         if not open_memos:
             self.memo_list.addItem("暂无待办，点击下方快速添加")
 
@@ -881,10 +938,11 @@ class NavList(QListWidget):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setMouseTracking(True)
-        self._delegate = NavDelegate(self)
-        self.setItemDelegate(self._delegate)
-        self.viewport().installEventFilter(self)
-        self.itemClicked.connect(lambda it: self._delegate.shake(self.row(it)))
+        if get_setting("low_memory", "0") != "1":
+            self._delegate = NavDelegate(self)
+            self.setItemDelegate(self._delegate)
+            self.viewport().installEventFilter(self)
+            self.itemClicked.connect(lambda it: self._delegate.shake(self.row(it)))
 
     def _distribute(self):
         n = self.count()
@@ -925,22 +983,22 @@ class MainWindow(QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         self.resize(1280, 800)
-        self.setMinimumSize(1080, 700)
+        self.setMinimumSize(880, 500)
         self.setStyleSheet(WINDOW_QSS)
 
         root = QWidget()
         root.setObjectName("Root")
         self.setCentralWidget(root)
         h = QHBoxLayout(root)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(0)
+        h.setContentsMargins(14, 14, 14, 14)
+        h.setSpacing(12)
 
         # 左侧导航
         side = QWidget()
         side.setObjectName("Side")
         side.setFixedWidth(220)
         sv = QVBoxLayout(side)
-        sv.setContentsMargins(0, 22, 0, 16)
+        sv.setContentsMargins(8, 22, 8, 16)
         sv.setSpacing(0)
 
         logo_row = QHBoxLayout()
@@ -962,7 +1020,6 @@ class MainWindow(QMainWindow):
 
         self.nav = NavList()
         self.nav.setObjectName("Nav")
-        self.nav.setFixedWidth(220)
         self.nav.setIconSize(QSize(26, 26))
         for title, ico in NAV_ITEMS:
             it = QListWidgetItem(f"    {title}")
@@ -982,10 +1039,17 @@ class MainWindow(QMainWindow):
         # 右侧页面
         right = QWidget()
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(26, 20, 26, 18)
+        rv.setContentsMargins(14, 8, 8, 8)
         rv.setSpacing(0)
         self.stack = QStackedWidget()
-        rv.addWidget(self.stack)
+        self.stack.setMinimumSize(900, 520)
+        self.stack_scroll = QScrollArea()
+        self.stack_scroll.setWidgetResizable(True)
+        self.stack_scroll.setFrameShape(QFrame.NoFrame)
+        self.stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.stack_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.stack_scroll.setWidget(self.stack)
+        rv.addWidget(self.stack_scroll)
         h.addWidget(right, 1)
 
         # 页面实例
@@ -997,22 +1061,23 @@ class MainWindow(QMainWindow):
         from pages_prep import PrepPage
 
         self.dashboard = DashboardPage(db)
-        self.calendar = CalendarPage(db)
-        self.design = DesignPage(db)
-        self.rehearsal = RehearsalPage(db)
-        self.memo = MemoPage(db)
-        self.ai_page = AIWriterPage(db)
-        self.prep = PrepPage(db)
         self.music = MusicPage()
-        self.settings = SettingsPage()
-
-        self.pages = [self.dashboard, self.calendar, self.design, self.rehearsal,
-                      self.memo, self.ai_page, self.prep,
-                      self.music, self.settings]
-        for p in self.pages:
-            self.stack.addWidget(p)
+        self._page_factories = {
+            1: ("calendar", lambda: CalendarPage(db)),
+            2: ("design", lambda: DesignPage(db)),
+            3: ("rehearsal", lambda: RehearsalPage(db)),
+            4: ("memo", lambda: MemoPage(db)),
+            5: ("ai_page", lambda: AIWriterPage(db)),
+            6: ("prep", lambda: PrepPage(db)),
+            8: ("settings", SettingsPage),
+        }
+        self.pages = [self.dashboard, self.music]
+        for idx in range(len(NAV_ITEMS)):
+            self.stack.addWidget({0: self.dashboard, 7: self.music}.get(idx) or QWidget())
 
         self.dashboard.navigate.connect(self.go)
+        self.dashboard.open_event.connect(self.open_calendar_date)
+        self.dashboard.open_memo.connect(self.open_memo)
 
         # 系统托盘
         self.tray = QSystemTrayIcon(QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon(), self)
@@ -1042,9 +1107,18 @@ class MainWindow(QMainWindow):
         self._notified = set()
 
         self.switch_page(0)
+        self._tint_nav(0)
 
     def go(self, idx):
         self.nav.setCurrentRow(idx)
+
+    def open_calendar_date(self, date_text):
+        self.go(1)
+        QTimer.singleShot(100, lambda: self.calendar.select_date(date_text, True))
+
+    def open_memo(self, memo_id):
+        self.go(4)
+        QTimer.singleShot(100, lambda: self.memo.select_memo(memo_id))
 
     def apply_name(self, name):
         name = (name or "主持人工作台").strip() or "主持人工作台"
@@ -1057,7 +1131,8 @@ class MainWindow(QMainWindow):
     def _tint_nav(self, idx):
         try:
             for i in range(self.nav.count()):
-                color = "#C9A86A" if i == idx else "#A9A39A"
+                palette = theme.THEMES[theme.current_theme()]
+                color = palette["accent"] if i == idx else palette["nav_text"]
                 self.nav.item(i).setIcon(appicons.icon(NAV_ITEMS[i][1], 26, color))
         except Exception:
             pass
@@ -1065,6 +1140,16 @@ class MainWindow(QMainWindow):
     def switch_page(self, idx):
         if idx < 0:
             return
+        if idx in self._page_factories:
+            name, make_page = self._page_factories[idx]
+            page = make_page()
+            placeholder = self.stack.widget(idx)
+            self.stack.removeWidget(placeholder)
+            placeholder.deleteLater()
+            self.stack.insertWidget(idx, page)
+            setattr(self, name, page)
+            self.pages.append(page)
+            del self._page_factories[idx]
         self.stack.setCurrentIndex(idx)
         if idx == 0:
             self.dashboard.refresh()
@@ -1187,6 +1272,9 @@ class MainWindow(QMainWindow):
             return
         try:
             if snd in ("1", "beep", "system"):
+                if sys.platform != "win32":
+                    QApplication.beep()
+                    return
                 import winsound
                 if m["important"]:
                     for _ in range(3):
@@ -1473,7 +1561,7 @@ class OnboardingWizard(QDialog):
         w, v = self._page("④ 软件主题", "选一个你看着舒服的界面风格，之后可在设置里随时改。")
         self.cb_theme = QComboBox()
         self.cb_theme.addItems(list(theme.THEMES.keys()))
-        cur = self.db.get_setting("theme", "暗夜金")
+        cur = self.db.get_setting("theme", theme.DEFAULT_THEME)
         if cur in theme.THEMES:
             self.cb_theme.setCurrentText(cur)
         v.addWidget(self.cb_theme)
@@ -1600,6 +1688,10 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     app.setStyle("Fusion")
+    app_font = QFont("MiSans", 10)
+    app_font.setWeight(QFont.Weight.Light)
+    app_font.setLetterSpacing(QFont.AbsoluteSpacing, 0.25)
+    app.setFont(app_font)
     # 低内存保护：限制单张图片解码上限，避免超大图直接把进程撑爆
     try:
         from PySide6.QtGui import QImageReader
@@ -1650,7 +1742,7 @@ def main():
             pass
     # 主题（设置中可选多套风格）
     global WINDOW_QSS
-    WINDOW_QSS = theme.build_qss(BASE_QSS, db.get_setting("theme", "暗夜金"))
+    WINDOW_QSS = theme.build_qss(BASE_QSS, db.get_setting("theme", theme.DEFAULT_THEME))
     import licensing
     if "--selftest" not in sys.argv and not licensing.ensure_license(WINDOW_QSS):
         sys.exit(0)
@@ -1670,7 +1762,7 @@ def main():
         except Exception:
             pass
         db = DB()
-        WINDOW_QSS = theme.build_qss(BASE_QSS, db.get_setting("theme", "暗夜金"))
+        WINDOW_QSS = theme.build_qss(BASE_QSS, db.get_setting("theme", theme.DEFAULT_THEME))
     # 自动备份目录不能放在软件数据目录里，避免卸载时被一起删掉
     try:
         bd = db.get_setting("backup_dir", "")

@@ -3,6 +3,8 @@ workflows:
     name: 主持人工作台 macOS
     instance_type: mac_mini_m2
     max_build_duration: 60
+    environment:
+      python: 3.12
     scripts:
       - name: Secret scan
         script: |
@@ -10,18 +12,11 @@ workflows:
       - name: Install dependencies
         script: |
           python3 --version
+          python3 -c "import platform; assert platform.machine() == 'arm64', platform.machine()"
           python3 -m pip install --upgrade pip
-          python3 -m pip install PySide6 mutagen python-docx cryptography pyinstaller pyobjc-framework-MediaPlayer pyobjc-framework-Cocoa
+          python3 -m pip install -r requirements-build.txt
       - name: Build .app
         script: |
-          python3 -m PyInstaller --noconfirm --windowed --name "主持人工作台" \
-            --add-data "assets:assets" \
-            --collect-submodules mutagen \
-            --collect-submodules docx \
-            --collect-submodules cryptography \
-            --collect-all MediaPlayer --hidden-import MediaPlayer \
-            --collect-submodules Foundation \
-            --collect-submodules AppKit --collect-submodules objc \
-            app.py
+          python3 -m PyInstaller --clean --noconfirm HostWorkbench.spec
     artifacts:
       - dist/*.app

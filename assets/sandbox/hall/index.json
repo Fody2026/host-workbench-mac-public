@@ -5,11 +5,6 @@
   "name": "香槟金·剧院长厅"
  },
  {
-  "id": "hall2",
-  "file": "hall2.jpg",
-  "name": "穹顶·圆桌厅"
- },
- {
   "id": "hall3",
   "file": "hall3.jpg",
   "name": "香槟金·花艺长厅"
@@ -28,5 +23,15 @@
   "id": "hall6",
   "file": "hall6.jpg",
   "name": "香槟金·圆桌长厅"
+ },
+ {
+  "id": "hall8",
+  "file": "hall8.jpg",
+  "name": "户外草坪"
+ },
+ {
+  "id": "hall9",
+  "file": "hall9.jpg",
+  "name": "小众场地"
  }
 ]

@@ -23,7 +23,7 @@ def icon(name: str, size: int = 22, color: str = DEFAULT) -> QIcon:
     p = QPainter(pix)
     p.setRenderHint(QPainter.Antialiasing)
     pen = QPen(QColor(color))
-    pen.setWidthF(max(1.3, s * 0.065))
+    pen.setWidthF(max(1.25, s * 0.06))
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     p.setPen(pen)
@@ -78,6 +78,12 @@ def icon(name: str, size: int = 22, color: str = DEFAULT) -> QIcon:
         _stroke(p, [(7.8, 4.5), (14.8, 4.5), (14.8, 8.6)])
         p.drawEllipse(R(12.6, 13.2, 4.2, 4.2))
         _stroke(p, [(16.8, 13.2), (16.8, 5.6)])
+    elif name == "questionnaire":
+        p.drawRoundedRect(R(4, 3.5, 16, 17.5), 2 * u, 2 * u)
+        _stroke(p, [(8, 9), (16, 9)])
+        _stroke(p, [(8, 13), (16, 13)])
+        p.drawEllipse(R(8, 15.4, 3.2, 3.2))
+        _stroke(p, [(11.2, 17), (13.4, 15), (16, 18)])
     elif name == "settings":
         p.drawEllipse(R(8.6, 8.6, 6.8, 6.8))
         for k in range(8):

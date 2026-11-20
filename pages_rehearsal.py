@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
     QComboBox, QLineEdit, QSpinBox, QSlider, QCheckBox, QListWidget, QListWidgetItem,
     QTabWidget, QScrollArea, QFileDialog, QMessageBox, QProgressDialog,
-    QAbstractItemView, QSizePolicy, QGraphicsDropShadowEffect, QApplication, QInputDialog
+    QAbstractItemView, QSizePolicy, QGraphicsDropShadowEffect, QApplication, QInputDialog, QToolButton, QMenu
 )
 
 import common
@@ -169,6 +169,7 @@ class SandboxCanvas(QWidget):
         self._bg_src = QPixmap()
         self._bg = QPixmap()
         self._backdrop = QPixmap()
+        self.square_mode = True
         self._drag = None
         self._drag_path = None
         self._load_hall(self.hall_id)
@@ -179,6 +180,10 @@ class SandboxCanvas(QWidget):
         pm = QPixmap(self.models.hall_path(hid))
         self._bg_src = pm
         self._rebuild_bg()
+
+    def set_square_mode(self, on):
+        self.square_mode = bool(on)
+        self.update()
 
     def set_hall(self, hid):
         if hid and hid != self.hall_id:
@@ -374,6 +379,7 @@ class SandboxCanvas(QWidget):
         r = self._target_rect()
         p.save()
         p.translate(r.x(), r.y())
+        p.fillRect(r, QColor("#0B0C10"))
         p.scale(r.width() / SCENE_W, r.height() / SCENE_H)
         self._paint_scene(p)
         p.restore()
@@ -410,7 +416,7 @@ class SandboxCanvas(QWidget):
                 p.drawLine(0, gy, SCENE_W, gy)
 
         # 舞台 / 入口 标注
-        f = QFont("Noto Sans CJK SC")
+        f = QFont("MiSans")
         f.setPixelSize(22)
         f.setLetterSpacing(QFont.AbsoluteSpacing, 3)
         p.setFont(f)
@@ -451,7 +457,7 @@ class SandboxCanvas(QWidget):
 
         # 人物
         order = sorted(range(len(self.actors)), key=lambda i: self.actor_position(self.actors[i])[1])
-        fnt = QFont("Noto Sans CJK SC")
+        fnt = QFont("MiSans")
         for idx in order:
             a = self.actors[idx]
             x, y = self.actor_position(a)
@@ -632,7 +638,7 @@ class TimelineWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(86)
+        self.setFixedHeight(68)
         self.setCursor(Qt.PointingHandCursor)
         self.phase_count = 1
         self.duration = 30
@@ -681,7 +687,7 @@ class TimelineWidget(QWidget):
                 c.setAlpha(105)
             p.fillRect(block, c)
             if block.width() > 34:
-                f = QFont("Noto Sans CJK SC")
+                f = QFont("MiSans")
                 f.setPixelSize(11)
                 p.setFont(f)
                 p.setPen(QColor(24, 22, 18, 235))
@@ -692,7 +698,7 @@ class TimelineWidget(QWidget):
                     p.drawText(block.adjusted(5, 1, -4, -1), Qt.AlignRight | Qt.AlignVCenter,
                                f"{secs:.1f}s")
             if block.width() > 70:
-                f = QFont("Noto Sans CJK SC")
+                f = QFont("MiSans")
                 f.setPixelSize(10)
                 p.setFont(f)
                 p.setPen(QColor(255, 255, 255, 150))
@@ -706,7 +712,7 @@ class TimelineWidget(QWidget):
         p.setPen(Qt.NoPen)
         p.drawPolygon(QPolygonF([QPointF(px - 6, track.y() - 14), QPointF(px + 6, track.y() - 14),
                                  QPointF(px, track.y() - 6)]))
-        f = QFont("Noto Sans CJK SC")
+        f = QFont("MiSans")
         f.setPixelSize(11)
         p.setFont(f)
         p.setPen(QColor(255, 255, 255, 160))
@@ -722,6 +728,37 @@ class TimelineWidget(QWidget):
         self.phaseClicked.emit(idx)
 
 
+class CanvasHost(QWidget):
+    """默认按 1:1 放置画布；全屏时让画布铺满可用区域。"""
+
+    def __init__(self, canvas, parent=None):
+        super().__init__(parent)
+        self.canvas = canvas
+        self.canvas.setParent(self)
+        self.fullscreen_mode = False
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(0, 0)
+
+    def set_fullscreen(self, on):
+        self.fullscreen_mode = bool(on)
+        self._layout_canvas()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, self._layout_canvas)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._layout_canvas()
+
+    def _layout_canvas(self):
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return
+        self.canvas.set_square_mode(False)
+        self.canvas.setGeometry(0, 0, w, h)
+
+
 class RehearsalPage(QWidget):
     def __init__(self, db=None, parent=None):
         super().__init__(parent)
@@ -735,6 +772,7 @@ class RehearsalPage(QWidget):
         self._timer.timeout.connect(self._tick)
         self._last_tick = time.time()
         self._full = False
+        self.canvas_host = None
         self._build_ui()
         self._restore_layout()
         self.refresh()
@@ -754,7 +792,7 @@ class RehearsalPage(QWidget):
         tbox.setSpacing(2)
         title = QLabel("预演沙盘")
         title.setObjectName("Title")
-        self.lb_hall = QLabel("宴会厅实景 · 3D 人物 · 动线预演")
+        self.lb_hall = QLabel("场景实景 · 3D 人物 · 动线预演")
         self.lb_hall.setObjectName("Body")
         tbox.addWidget(title)
         tbox.addWidget(self.lb_hall)
@@ -762,11 +800,6 @@ class RehearsalPage(QWidget):
         top.addStretch()
         b_full = QPushButton("⛶ 全屏")
         b_full.clicked.connect(self.toggle_fullscreen)
-        b_png = QPushButton("导出 PNG")
-        b_png.clicked.connect(self.export_png)
-        b_mp4 = QPushButton("导出 MP4")
-        b_mp4.setObjectName("Primary")
-        b_mp4.clicked.connect(lambda: self.export_mp4())
         b_undo = QPushButton("↶ 撤销")
         b_undo.clicked.connect(self.undo)
         b_save = QPushButton("保存方案")
@@ -775,7 +808,14 @@ class RehearsalPage(QWidget):
         b_load.clicked.connect(self.load_layout)
         b_clear = QPushButton("清空人物")
         b_clear.clicked.connect(self.clear_all)
-        for b in (b_undo, b_save, b_load, b_clear, b_png, b_mp4, b_full):
+        b_export = QToolButton()
+        b_export.setText("导出")
+        b_export.setPopupMode(QToolButton.InstantPopup)
+        em = QMenu(b_export)
+        em.addAction("导出 PNG", self.export_png)
+        em.addAction("导出 MP4", lambda: self.export_mp4())
+        b_export.setMenu(em)
+        for b in (b_undo, b_save, b_load, b_clear, b_export, b_full):
             top.addWidget(b)
         outer.addWidget(self.topbar)
 
@@ -789,6 +829,8 @@ class RehearsalPage(QWidget):
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(8)
         self.canvas = SandboxCanvas()
+        self.canvas.setMinimumSize(0, 0)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.actorSelected.connect(self.on_actor_selected)
         self.canvas.sceneEdited.connect(self._on_canvas_edited)
         self.canvas.editStarted.connect(self._snapshot)
@@ -798,30 +840,32 @@ class RehearsalPage(QWidget):
         self.timeline.phaseClicked.connect(lambda i: self._on_phase_pick(i, seek=False))
         cv.addWidget(self.timeline)
         bar = QHBoxLayout()
-        bar.setSpacing(8)
-        self.btn_play = QPushButton("▶ 播放动线")
+        bar.setSpacing(6)
+        self.btn_play = QPushButton("▶ 播放")
         self.btn_play.setObjectName("Primary")
+        self.btn_play.setMinimumWidth(74)
         self.btn_play.clicked.connect(self.toggle_play)
         bar.addWidget(self.btn_play)
         b_stop = QPushButton("■ 停止")
+        b_stop.setMinimumWidth(68)
         b_stop.clicked.connect(self.stop_play)
         bar.addWidget(b_stop)
         self.chk_loop = QCheckBox("循环")
         bar.addWidget(self.chk_loop)
-        bar.addWidget(QLabel("每环节"))
+        bar.addWidget(QLabel("每段"))
         self.sp_phase_secs = QSpinBox()
         self.sp_phase_secs.setRange(1, 600)
         self.sp_phase_secs.setValue(3)
         self.sp_phase_secs.setSuffix(" 秒")
-        self.sp_phase_secs.setFixedWidth(92)
+        self.sp_phase_secs.setFixedWidth(78)
         self.sp_phase_secs.valueChanged.connect(self._on_phase_secs_changed)
         bar.addWidget(self.sp_phase_secs)
-        bar.addWidget(QLabel("总时长"))
+        bar.addWidget(QLabel("总长"))
         self.sp_secs = QSpinBox()
         self.sp_secs.setRange(1, 2147483647)
         self.sp_secs.setValue(3)
         self.sp_secs.setSuffix(" 秒")
-        self.sp_secs.setFixedWidth(100)
+        self.sp_secs.setFixedWidth(86)
         self.sp_secs.setReadOnly(True)
         bar.addWidget(self.sp_secs)
         self.lb_time = QLabel("00:00 / 00:24")
@@ -833,7 +877,7 @@ class RehearsalPage(QWidget):
 
         # 右：配置卡（三页签）
         self.right_card = make_card()
-        self.right_card.setFixedWidth(380)
+        self.right_card.setFixedWidth(340)
         rv = QVBoxLayout(self.right_card)
         rv.setContentsMargins(12, 12, 12, 12)
         rv.setSpacing(8)
@@ -842,7 +886,11 @@ class RehearsalPage(QWidget):
         self.tabs.addTab(self._tab_scene(), "场景")
         self.tabs.addTab(self._tab_people(), "人物")
         self.tabs.addTab(self._tab_path(), "手绘动线")
-        rv.addWidget(self.tabs, 1)
+        self.tabs_scroll = QScrollArea()
+        self.tabs_scroll.setWidgetResizable(True)
+        self.tabs_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.tabs_scroll.setWidget(self.tabs)
+        rv.addWidget(self.tabs_scroll, 1)
         body.addWidget(self.right_card)
 
         outer.addLayout(body, 1)
@@ -862,7 +910,7 @@ class RehearsalPage(QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(10, 12, 10, 10)
         v.setSpacing(8)
-        lb = QLabel("宴会厅底图")
+        lb = QLabel("场景底图")
         lb.setObjectName("SectionTitle")
         v.addWidget(lb)
         self.hall_list = QListWidget()
@@ -873,7 +921,7 @@ class RehearsalPage(QWidget):
         self.hall_list.setSpacing(4)
         self.hall_list.setGridSize(QSize(108, 98))
         self.hall_list.setIconSize(QSize(96, 62))
-        self.hall_list.setFixedHeight(218)
+        self.hall_list.setFixedHeight(188)
         for h in self.models.halls:
             pm = QPixmap(self.models.hall_thumb(h["id"]))
             short = h["name"].split("·")[-1]
@@ -889,6 +937,7 @@ class RehearsalPage(QWidget):
 
         lb2 = QLabel("画面质感")
         lb2.setObjectName("SectionTitle")
+        lb2.setMinimumWidth(180)
         v.addWidget(lb2)
         g = QGridLayout()
         g.setHorizontalSpacing(8)
@@ -909,6 +958,7 @@ class RehearsalPage(QWidget):
 
         lb3 = QLabel("宴会桌椅")
         lb3.setObjectName("SectionTitle")
+        lb3.setMinimumWidth(180)
         v.addWidget(lb3)
         row_prop = QHBoxLayout()
         row_prop.setSpacing(6)
@@ -922,7 +972,7 @@ class RehearsalPage(QWidget):
         tip_prop.setWordWrap(True)
         v.addWidget(tip_prop)
 
-        tip = QLabel("底图来自素材包里的 6 个宴会厅实景；柔化让画面更干净，也让人物更突出。")
+        tip = QLabel("底图来自素材包里的场景实景；柔化让画面更干净，也让人物更突出。")
         tip.setObjectName("Body")
         tip.setWordWrap(True)
         v.addWidget(tip)
@@ -1939,8 +1989,18 @@ class RehearsalPage(QWidget):
             self._full = True
             self.topbar.hide()
             self.right_card.hide()
+            self._side = self.window().findChild(QWidget, "Side")
+            if self._side is not None:
+                self._side.hide()
+            host = getattr(self, "canvas_host", None)
+            if host is not None:
+                host.set_fullscreen(True)
             self.lbl_fs.show()
-            self.window().showFullScreen()
+            win = self.window()
+            win.setWindowState(win.windowState() | Qt.WindowFullScreen)
+            win.showFullScreen()
+            win.raise_()
+            win.activateWindow()
             QTimer.singleShot(150, self._place_fs_label)
 
     def _place_fs_label(self):
@@ -1953,8 +2013,16 @@ class RehearsalPage(QWidget):
         self._full = False
         self.topbar.show()
         self.right_card.show()
+        side = getattr(self, "_side", None)
+        if side is not None:
+            side.show()
         self.lbl_fs.hide()
-        self.window().showNormal()
+        host = getattr(self, "canvas_host", None)
+        if host is not None:
+            host.set_fullscreen(False)
+        win = self.window()
+        win.setWindowState(win.windowState() & ~Qt.WindowFullScreen)
+        win.showNormal()
 
     # ---------------- 导出 ----------------
     def export_png(self):
@@ -1975,8 +2043,8 @@ class RehearsalPage(QWidget):
             QMessageBox.critical(self, "导出失败", str(e))
 
     def _ffmpeg(self):
-        p = asset_path("ffmpeg.exe")
-        return p if os.path.exists(p) else "ffmpeg"
+        from common import ffmpeg_path
+        return ffmpeg_path()
 
     def export_mp4(self, out_path=None, fps=24, silent=False):
         if out_path is None:

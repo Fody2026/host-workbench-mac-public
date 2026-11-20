@@ -33,7 +33,7 @@ FONT_LABELS = {
     "Long Cang": "龙藏体 · 艺术",
     "有字库龙藏体": "龙藏体（别名）",
     "ZCOOL KuaiLe": "站酷快乐体 · 艺术",
-    "Noto Sans CJK SC": "思源黑体 · 免费商用",
+    "MiSans": "MiSans · 免费商用", "Noto Sans CJK SC": "思源黑体 · 免费商用",
     "站酷小薇体": "站酷小薇 · 宋韵（免费商用）",
     "ZCOOL XiaoWei": "站酷小薇 · 宋韵（免费商用）",
 }
@@ -90,7 +90,7 @@ class TextItem(QGraphicsTextItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setDefaultTextColor(QColor("#F5F0E6"))
-        f = QFont("Noto Sans CJK SC")
+        f = QFont("MiSans")
         f.setPixelSize(64)
         self.setFont(f)
         self.setTextWidth(900)

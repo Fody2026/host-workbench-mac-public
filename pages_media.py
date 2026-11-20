@@ -700,11 +700,6 @@ class SettingsPage(QWidget):
         b_save_top = QPushButton("保存设置")
         b_save_top.setObjectName("Primary")
         b_save_top.setMinimumWidth(140)
-        b_save_top.setStyleSheet(
-            "QPushButton{background:#C9A86A;color:#101216;font-weight:700;"
-            "border:1px solid #E6CC96;border-radius:8px;padding:8px 20px;}"
-            "QPushButton:hover{background:#DCC08A;}"
-            "QPushButton:pressed{background:#B89658;}")
         b_save_top.clicked.connect(self.save)
         topbar.addWidget(b_save_top)
         outer.addLayout(topbar)
@@ -834,7 +829,7 @@ class SettingsPage(QWidget):
         v4.addWidget(QLabel("主持助理模型", objectName="SectionTitle"))
         row4 = QHBoxLayout()
         self.lb_ai = QLabel("未连接")
-        self.lb_ai.setStyleSheet("color:#8D919B;")
+        self.lb_ai.setObjectName("SubTitle")
         row4.addWidget(self.lb_ai, 1)
         b_ai = QPushButton("打开连接设置…")
         b_ai.clicked.connect(self.open_ai_connect)
@@ -909,7 +904,7 @@ class SettingsPage(QWidget):
         b_import = QPushButton("导入全部数据")
         b_import.clicked.connect(self.restore_backup_now)
         b_open = QPushButton("打开数据目录")
-        b_open.clicked.connect(lambda: common.open_path(data_dir()))
+        b_open.clicked.connect(lambda: os.startfile(data_dir()))
         row6.addWidget(b_export)
         row6.addWidget(b_import)
         row6.addWidget(b_open)
@@ -924,7 +919,7 @@ class SettingsPage(QWidget):
         lay.addStretch()
 
     def load_values(self):
-        self.cb_theme.setCurrentText(get_setting("theme", "暗夜金"))
+        self.cb_theme.setCurrentText(get_setting("theme", theme.DEFAULT_THEME))
         self.ed_appname.setText(get_setting("workbench_name", "主持人工作台"))
         cur = get_setting("memo_sound", "1")
         idx = self.cb_sound.findData(cur)

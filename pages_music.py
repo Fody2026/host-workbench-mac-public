@@ -15,7 +15,7 @@ import ctypes
 import ctypes.wintypes
 import copy
 
-from PySide6.QtCore import Qt, QUrl, QTimer, QSize, QDir, QModelIndex, QMimeData, QItemSelection, QItemSelectionModel, QPoint
+from PySide6.QtCore import Qt, QUrl, QTimer, QSize, QDir, QModelIndex, QMimeData, QItemSelection, QItemSelectionModel, QPoint, Signal, Slot
 from PySide6.QtGui import QFont, QAction, QIcon, QKeySequence, QShortcut, QDrag, QPainter, QColor, QPen, QPixmap, QPolygon, QCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QGridLayout, QAbstractItemView, QInputDialog, QMenu, QToolButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QTreeView, QFileSystemModel,
     QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QApplication,
-    QKeySequenceEdit, QGroupBox, QStyle, QProgressDialog, QSplitter
+    QKeySequenceEdit, QGroupBox, QStyle, QProgressDialog, QSplitter, QSizePolicy
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -778,6 +778,8 @@ class MediaKeyHook:
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.GetModuleHandleW.argtypes = [ctypes.wintypes.LPCWSTR]
             kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+            user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+            user32.UnhookWindowsHookEx.restype = ctypes.wintypes.BOOL
             user32.SetWindowsHookExW.restype = ctypes.c_void_p
             user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
                                               ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
@@ -830,12 +832,21 @@ class ShortcutDialog(QDialog):
         self.cfg = {k: dict(v) for k, v in cfg.items()}
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
-        tip = QLabel("勾选「全局」后，软件最小化或在后台也能用；不勾选则只在软件窗口激活时生效。\n"
-                     "全局热键会占用系统组合键，设置失败会自动退回软件内快捷键。\n"
-                     "诺为 N61 司仪宝：接收器 Mode 切到「模式1」，上一曲/播放暂停/下一曲会自动接管，无需再设快捷键。")
+        tip = QLabel("媒体键遥控器可使用演出模式。发出普通键盘按键的遥控器，"
+                     "请点击快捷键输入框后按遥控器上的按钮。"
+                     "\n诺为 N61 请将接收器切到模式 1。此模式保留系统音量控制。")
         tip.setObjectName("SubTitle")
         tip.setWordWrap(True)
         lay.addWidget(tip)
+        self.show_mode = QCheckBox("演出模式 · 在后台优先响应播放媒体键")
+        self.show_mode.setChecked(get_setting("music_show_mode", "1") == "1")
+        self.show_mode.setEnabled(sys.platform in ("darwin", "win32"))
+        lay.addWidget(self.show_mode)
+        if sys.platform == "darwin":
+            permission = QLabel("如接管失败，请在「系统设置 → 隐私与安全性 → 辅助功能」"
+                                "允许主持人工作台，然后重启。全局普通按键按 ANSI 键位识别，须开启演出模式。")
+            permission.setWordWrap(True)
+            lay.addWidget(permission)
 
         box = QGroupBox("播放快捷键")
         grid = QGridLayout(box)
@@ -853,6 +864,7 @@ class ShortcutDialog(QDialog):
             grid.addWidget(edit, i, 1)
             chk = QCheckBox("全局")
             chk.setChecked(bool(cur.get("global")))
+            chk.setEnabled(sys.platform in ("win32", "darwin"))
             grid.addWidget(chk, i, 2)
             b_clear = QPushButton("清除")
             b_clear.setMinimumWidth(64)
@@ -901,43 +913,70 @@ class ShortcutDialog(QDialog):
 
 
 class MacNowPlaying:
-    """macOS 媒体键接管：注册为 Now Playing，接收播放/暂停、上一首、下一首。"""
+    """macOS Now Playing metadata and optional MPRemoteCommand fallback."""
 
     def __init__(self, page):
         self.page = page
         self.ok = False
+        self.active = False
+        self.commands = False
         self.handlers = []
+        self.MP = None
         self.info_center = None
         try:
             import MediaPlayer
-            import Foundation
             self.MP = MediaPlayer
-            self.NS = Foundation
-            center = MediaPlayer.MPRemoteCommandCenter.sharedCommandCenter()
-            def bind(cmd, fn):
-                def handler(_event):
-                    QTimer.singleShot(0, fn)
-                    return 0
-                token = cmd.addTargetWithHandler_(handler)
-                self.handlers.append(token)
-            bind(center.playCommand(), page.toggle_play)
-            bind(center.pauseCommand(), page.toggle_play)
-            bind(center.togglePlayPauseCommand(), page.toggle_play)
-            bind(center.nextTrackCommand(), page.play_next)
-            bind(center.previousTrackCommand(), page.play_prev)
             self.info_center = MediaPlayer.MPNowPlayingInfoCenter.defaultCenter()
             self.ok = True
         except Exception as e:
-            try:
-                logging.getLogger(__name__).info("macOS 媒体键不可用: %s", e)
-            except Exception:
-                pass
+            logging.getLogger(__name__).info("macOS 媒体回调不可用: %s", e)
 
-    def update(self, title="", playing=False, duration=0, position=0):
-        if not self.ok:
+    def set_active(self, enabled):
+        self.active = bool(enabled and self.ok)
+        if not self.active:
+            self.set_commands(False)
+            self.clear()
+        else:
+            self.update()
+
+    def set_commands(self, enabled):
+        enabled = bool(enabled and self.ok)
+        if enabled == self.commands:
+            return
+        self.commands = enabled
+        if not enabled:
+            for command, token in self.handlers:
+                try:
+                    command.removeTarget_(token)
+                except Exception:
+                    pass
+            self.handlers = []
             return
         try:
-            info = self.NS.NSMutableDictionary.dictionary()
+            center = self.MP.MPRemoteCommandCenter.sharedCommandCenter()
+            pairs = (
+                (center.playCommand(), "play"),
+                (center.pauseCommand(), "pause"),
+                (center.togglePlayPauseCommand(), "play_pause"),
+                (center.nextTrackCommand(), "next"),
+                (center.previousTrackCommand(), "prev"),
+            )
+            for command, action in pairs:
+                def handler(_event, a=action):
+                    self.page.media_action.emit(a)
+                    return 0
+                token = command.addTargetWithHandler_(handler)
+                self.handlers.append((command, token))
+        except Exception:
+            logging.getLogger(__name__).exception("macOS 系统媒体回调注册失败")
+            self.handlers = []
+            self.commands = False
+
+    def update(self, title="", playing=False, duration=0, position=0):
+        if not self.ok or not self.active:
+            return
+        try:
+            info = {}
             if title:
                 info[self.MP.MPMediaItemPropertyTitle] = title
             info[self.MP.MPMediaItemPropertyPlaybackDuration] = float(duration) / 1000.0
@@ -945,6 +984,15 @@ class MacNowPlaying:
             info[self.MP.MPNowPlayingInfoPropertyPlaybackRate] = 1.0 if playing else 0.0
             self.info_center.setNowPlayingInfo_(info)
             self.info_center.setPlaybackState_(1 if playing else 2)
+        except Exception:
+            pass
+
+    def clear(self):
+        if not self.ok:
+            return
+        try:
+            self.info_center.setNowPlayingInfo_(None)
+            self.info_center.setPlaybackState_(0)
         except Exception:
             pass
 
@@ -1339,6 +1387,8 @@ class LegalMusicDialog(QDialog):
             self.lb_msg.setText("下载失败：" + str(exc))
 
 class MusicPage(QWidget):
+    media_action = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.lib = Library()
@@ -1367,8 +1417,12 @@ class MusicPage(QWidget):
         self._shortcut_cfg = self._load_shortcut_cfg()
         self._build_ui()
         self._init_player()
-        self.media_hook = MediaKeyHook(self._on_media_key)
+        self.media_hook = None
+        self.media_action.connect(self._on_media_key, Qt.QueuedConnection)
         self.mac_media = MacNowPlaying(self) if sys.platform == "darwin" else None
+        self._media_hook_error = ""
+        self._apply_show_mode(get_setting("music_show_mode", "1") == "1")
+        QApplication.instance().aboutToQuit.connect(self._stop_show_mode)
         self._load_lists()
         self._set_root(get_setting("music_dir", "") or os.path.join(data_dir(), "music"))
         self._load_tracks()
@@ -1384,11 +1438,22 @@ class MusicPage(QWidget):
         self.audio.setVolume(self.master_vol / 100)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
+        self.player.playbackStateChanged.connect(self._sync_playback_display)
         self.player.positionChanged.connect(self._on_pos)
         self.player.durationChanged.connect(self._on_dur)
         self.player.mediaStatusChanged.connect(self._on_status)
         self.player.errorOccurred.connect(self._on_error)
         self.sl_vol.setValue(self.master_vol)
+        self._sync_playback_display(self.player.playbackState())
+
+    def _sync_playback_display(self, state):
+        playing = state == QMediaPlayer.PlayingState
+        foreground = "#FFFFFF" if theme.current_theme() == theme.DEFAULT_THEME else "#14161B"
+        self.b_play.setIcon(icons.icon("pause" if playing else "play", 22, foreground))
+        label = {
+            QMediaPlayer.PlayingState: "播放中", QMediaPlayer.PausedState: "已暂停",
+        }.get(state, "已停止")
+        self.lb_playback.setText(label)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1407,9 +1472,10 @@ class MusicPage(QWidget):
         sub.setObjectName("SubTitle")
         tbox.addWidget(title)
         tbox.addWidget(sub)
-        head.addLayout(tbox)
-        head.addStretch()
-        b_legal = QPushButton("正版曲库(Jamendo)")
+        title_row = QHBoxLayout()
+        title_row.addLayout(tbox, 1)
+        lay.addLayout(title_row)
+        b_legal = QPushButton("正版曲库")
         b_legal.setToolTip("CC/正版授权曲库，需要免费 Jamendo Client ID")
         b_legal.clicked.connect(self.open_legal)
         head.addWidget(b_legal)
@@ -1439,12 +1505,15 @@ class MusicPage(QWidget):
         head.addWidget(b_refresh)
         head.addWidget(b_saveproj)
         head.addWidget(b_loadproj)
-        head.addWidget(b_keys)
+        title_row.addWidget(b_keys)
+        head.addStretch()
         lay.addLayout(head)
 
         body = QSplitter(Qt.Horizontal)
-        body.setHandleWidth(8)
+        body.setHandleWidth(12)
+        body.setOpaqueResize(True)
         body.setChildrenCollapsible(False)
+        self.body_splitter = body
 
         # ① 播放列表栏
         pl_card = QFrame()
@@ -1476,6 +1545,7 @@ class MusicPage(QWidget):
         # ② 音乐文件夹预览
         fs_card = QFrame()
         fs_card.setObjectName("CardAlt")
+        fs_card.setMinimumWidth(220)
         fv = QVBoxLayout(fs_card)
         fv.setContentsMargins(12, 12, 12, 12)
         fv.setSpacing(8)
@@ -1491,7 +1561,7 @@ class MusicPage(QWidget):
         b_dir.setToolTip("选择音乐库目录")
         b_dir.clicked.connect(self.pick_dir)
         frow.addWidget(self.ed_search)
-        lb_fs = QLabel("音乐文件")
+        lb_fs = QLabel("音乐库")
         lb_fs.setObjectName("SectionTitle")
         frow.addWidget(lb_fs, 1)
         frow.addWidget(b_dir)
@@ -1568,13 +1638,16 @@ class MusicPage(QWidget):
         hint.setObjectName("SubTitle")
         hint.setWordWrap(True)
         tv.addWidget(hint)
+        fs_card.setMinimumWidth(220)
+        pl_card.setMinimumWidth(150)
+        tr_card.setMinimumWidth(300)
         body.addWidget(fs_card)
         body.addWidget(pl_card)
         body.addWidget(tr_card)
         body.setStretchFactor(0, 2)
         body.setStretchFactor(1, 1)
         body.setStretchFactor(2, 6)
-        body.setSizes([260, 190, 820])
+        body.setSizes([300, 190, 760])
         lay.addWidget(body, 1)
 
         # 底部控制条
@@ -1583,6 +1656,18 @@ class MusicPage(QWidget):
         cv = QVBoxLayout(ctl)
         cv.setContentsMargins(16, 10, 16, 12)
         cv.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        self.lb_now = QLabel("尚未选择曲目")
+        self.lb_now.setObjectName("NowPlaying")
+        self.lb_now.setTextFormat(Qt.PlainText)
+        self.lb_now.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lb_now.setMinimumWidth(150)
+        self.lb_playback = QLabel("已停止")
+        self.lb_playback.setObjectName("PlaybackState")
+        title_row.addWidget(self.lb_now, 1)
+        title_row.addWidget(self.lb_playback)
+        cv.addLayout(title_row)
 
         row_prog = QHBoxLayout()
         self.lb_cur = QLabel("00:00")
@@ -1606,7 +1691,6 @@ class MusicPage(QWidget):
         self.b_play = QPushButton()
         self.b_play.setObjectName("Primary")
         self.b_play.setFixedSize(52, 36)
-        self.b_play.setIcon(icons.icon("play", 22, "#14161B"))
         self.b_play.setToolTip("播放 / 暂停")
         self.b_play.clicked.connect(self.toggle_play)
         b_stop = QPushButton()
@@ -1694,10 +1778,58 @@ class MusicPage(QWidget):
         except Exception as e:
             logger.warning("保存快捷键失败: %s", e)
 
+    def _stop_show_mode(self):
+        if self.media_hook is not None:
+            self.media_hook.uninstall()
+            self.media_hook = None
+        if getattr(self, "mac_media", None) is not None:
+            self.mac_media.set_commands(False)
+
+    def _apply_show_mode(self, enabled):
+        self._stop_show_mode()
+        self._media_hook_error = ""
+        if not enabled:
+            if getattr(self, "mac_media", None) is not None:
+                self.mac_media.set_active(False)
+            return True
+        try:
+            if sys.platform == "win32":
+                self.media_hook = MediaKeyHook(self.media_action.emit)
+                ok = self.media_hook is not None and bool(self.media_hook.hook)
+            elif sys.platform == "darwin":
+                from mac_remote import MacMediaKeyHook
+                self.media_hook = MacMediaKeyHook(self.media_action.emit)
+                ok = bool(self.media_hook is not None and self.media_hook.available)
+                if self.mac_media is not None:
+                    self.mac_media.set_active(True)
+                    self.mac_media.set_commands(not ok)
+                if not ok and self.media_hook is not None:
+                    self._media_hook_error = getattr(self.media_hook, "error", "") or "媒体键监听未安装"
+                    logger.warning("macOS 演出模式未接管媒体键: %s", self._media_hook_error)
+            else:
+                ok = False
+            return ok
+        except Exception:
+            logger.exception("启动演出模式失败")
+            self._media_hook_error = "启动演出模式异常，详见日志"
+            return False
+
     def open_shortcuts(self):
         dlg = ShortcutDialog(self._shortcut_cfg, self)
         if dlg.exec() != QDialog.Accepted:
             return
+        show_mode = dlg.show_mode.isChecked()
+        set_setting("music_show_mode", "1" if show_mode else "0")
+        if not self._apply_show_mode(show_mode):
+            extra = ("\n\n原因：" + self._media_hook_error) if self._media_hook_error else ""
+            fallback = ""
+            if getattr(self, "mac_media", None) is not None and self.mac_media.commands:
+                fallback = "\n已启用系统媒体回调作为备用；若仍无效，请检查辅助功能权限。"
+            QMessageBox.warning(
+                self, "演出模式未启用",
+                "无法接管播放媒体键。macOS 请检查辅助功能权限；Windows 请检查遥控器及其他媒体控制软件。"
+                + extra + fallback,
+            )
         cfg = dlg.result_cfg()
         self._shortcut_cfg = cfg
         self._save_shortcut_cfg(cfg)
@@ -1705,13 +1837,16 @@ class MusicPage(QWidget):
         if failed:
             QMessageBox.warning(
                 self, "全局快捷键未注册",
-                "以下全局组合键已被系统或其他软件占用，已退回为软件内快捷键：\n"
+                "以下按键未能注册为全局快捷键，已退回为软件内快捷键：\n"
                 + "、".join(failed) +
                 "\n\n可换一个组合键，或取消勾选「全局」。")
         else:
             self._status("快捷键已保存并生效")
 
     def _apply_shortcuts(self, cfg, silent=False):
+        mac_hook = self.media_hook if sys.platform == "darwin" else None
+        if mac_hook is not None:
+            mac_hook.shortcuts.clear()
         for sc in self._local_shortcuts:
             try:
                 sc.setEnabled(False)
@@ -1730,10 +1865,13 @@ class MusicPage(QWidget):
                 continue
             cb = (lambda a=key: self._do_shortcut(a))
             if item.get("global"):
-                hk = self.hotkey.register(seq, cb)
-                if hk is not None:
-                    self._global_ids.append(hk)
+                if mac_hook is not None and mac_hook.bind(QKeySequence(seq), "shortcut:" + key):
                     continue
+                if sys.platform == "win32":
+                    hk = self.hotkey.register(seq, cb)
+                    if hk is not None:
+                        self._global_ids.append(hk)
+                        continue
                 failed.append(f"{label}（{seq}）")
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.ApplicationShortcut)
@@ -1767,18 +1905,23 @@ class MusicPage(QWidget):
         except Exception:
             logger.exception("执行快捷键失败: %s", action)
 
+    @Slot(str)
     def _on_media_key(self, action):
-        """诺为 N61 司仪宝媒体键（模式1）"""
+        """处理已分发至 Qt 主线程的遥控事件。"""
+        if action.startswith("shortcut:"):
+            self._do_shortcut(action.partition(":")[2])
+            return
         try:
-            import time as _time
-            now = _time.time()
-            last = getattr(self, "_last_media", (None, 0))
-            if action == last[0] and now - last[1] < 0.28:
-                return
-            self._last_media = (action, now)
+            logger.info("媒体键动作: %s", action)
             if action == "play_pause":
                 self.toggle_play()
                 self._status("司仪宝：播放 / 暂停")
+            elif action == "play":
+                if self.player.playbackState() != QMediaPlayer.PlayingState:
+                    self.toggle_play()
+            elif action == "pause":
+                if self.player.playbackState() == QMediaPlayer.PlayingState:
+                    self.toggle_play()
             elif action == "next":
                 self.play_next()
                 self._status("司仪宝：下一曲")
@@ -1938,6 +2081,7 @@ class MusicPage(QWidget):
             self._status("音乐库目录已切换到：" + d)
 
     def refresh(self):
+        self._sync_playback_display(self.player.playbackState())
         self._load_lists()
         self._load_tracks()
         self.tree.doItemsLayout()
@@ -2410,8 +2554,7 @@ class MusicPage(QWidget):
         out = os.path.join(out_dir, f"pitch_{key}.wav")
         if os.path.exists(out) and os.path.getsize(out) > 1000:
             return out
-        ff = common.asset_path("ffmpeg.exe")
-        cmd = [ff if os.path.exists(ff) else "ffmpeg", "-y", "-i", path,
+        cmd = [common.ffmpeg_path(), "-y", "-i", path,
                "-af", f"rubberband=pitch={ratio:.4f}", "-ar", "44100", "-ac", "2", out]
         flags = 0
         if os.name == "nt":
@@ -2453,11 +2596,12 @@ class MusicPage(QWidget):
         self.player.play()
         self.player.setPlaybackRate(float(st.get("speed", 1.0)))
         self._update_mac_now_playing(True)
-        self.b_play.setIcon(icons.icon("pause", 22, "#14161B"))
         self.sp_speed.blockSignals(True)
         self.sp_speed.setValue(float(st.get("speed", 1.0)))
         self.sp_speed.blockSignals(False)
         self.table.selectRow(row)
+        self.lb_now.setText(self.track_title(path))
+        self.lb_now.setToolTip(self.track_title(path))
         self._status(f"正在播放：{self.track_title(path)}")
 
     def _on_status(self, status):
@@ -2506,13 +2650,11 @@ class MusicPage(QWidget):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self._fade_start(-1, 0)  # 暂停时直接停
             self.player.pause()
-            self.b_play.setIcon(icons.icon("play", 22, "#14161B"))
             self._update_mac_now_playing(False)
         else:
             if not self.player.source().isEmpty():
                 self.player.play()
                 self.player.setPlaybackRate(self.sp_speed.value())
-                self.b_play.setIcon(icons.icon("pause", 22, "#14161B"))
                 self._update_mac_now_playing(True)
             elif self.table.rowCount():
                 self.play_row(0)
@@ -2523,7 +2665,6 @@ class MusicPage(QWidget):
 
         def _do():
             self.player.stop()
-            self.b_play.setIcon(icons.icon("play", 22, "#14161B"))
             self.slider.setValue(0)
             self.lb_cur.setText("00:00")
             self._apply_volume()

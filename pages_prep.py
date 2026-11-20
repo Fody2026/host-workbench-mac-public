@@ -11,13 +11,13 @@ import json
 import logging
 import datetime
 
-from PySide6.QtCore import Qt, QDate, QTimer, QEvent, QObject, QUrl
+from PySide6.QtCore import Qt, QDate, QTimer, QEvent, QObject, QUrl, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QTabWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QFileDialog,
     QMessageBox, QDialog, QDialogButtonBox, QLineEdit, QListWidget, QListWidgetItem,
-    QCheckBox, QComboBox, QGridLayout, QDateEdit, QSlider, QMenu, QApplication
+    QCheckBox, QComboBox, QGridLayout, QDateEdit, QSlider, QMenu, QApplication, QPlainTextEdit, QStyledItemDelegate, QAbstractItemDelegate, QInputDialog
 )
 
 import common
@@ -897,6 +897,50 @@ class RowDialog(QDialog):
 # ============================================================
 #  清单面板
 # ============================================================
+class PrepCellEditor(QPlainTextEdit):
+    """单元格多行编辑：Shift/Ctrl/Alt+Enter 强制换行，Enter 提交。"""
+    commitRequested = Signal()
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if ev.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier):
+                self.insertPlainText("\n")
+                ev.accept()
+                return
+            self.commitRequested.emit()
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
+class PrepCellDelegate(QStyledItemDelegate):
+    def __init__(self, keys, parent=None):
+        super().__init__(parent)
+        self.keys = keys
+
+    def createEditor(self, parent, option, index):
+        if index.column() < len(self.keys) and self.keys[index.column()] == "done":
+            return None
+        ed = PrepCellEditor(parent)
+        ed.setMinimumHeight(72)
+        ed.setStyleSheet("QPlainTextEdit{background:rgba(255,255,255,0.92);color:#17283F;border:2px solid #164FBA;border-radius:8px;padding:6px;}")
+        ed.commitRequested.connect(lambda: self._commit(ed))
+        return ed
+
+    def _commit(self, editor):
+        self.commitData.emit(editor)
+        self.closeEditor.emit(editor, QAbstractItemDelegate.NoHint)
+
+    def setEditorData(self, editor, index):
+        editor.setPlainText(str(index.data(Qt.EditRole) or ""))
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.toPlainText(), Qt.EditRole)
+
+    def updateEditorGeometry(self, editor, option, index):
+        editor.setGeometry(option.rect.adjusted(0, 0, 0, 36))
+
+
 class RowResizeFilter(QObject):
     """没有行号栏时，用鼠标拖行底边来调行高"""
     def __init__(self, table):
@@ -971,6 +1015,7 @@ class ListPane(QWidget):
         self._loading = False
         self.rows = []
         self.define()
+        self._load_custom_columns()
         self._build()
         self.refresh()
 
@@ -994,47 +1039,59 @@ class ListPane(QWidget):
     # ---------- UI ----------
     def _build(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(8)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
 
-        bar = QHBoxLayout()
-        bar.setSpacing(6)
-        b_imp = QPushButton("导入文档/表格")
+        bar1 = QHBoxLayout()
+        bar1.setSpacing(6)
+        b_imp = QPushButton("导入")
         b_imp.setObjectName("Primary")
         b_imp.setToolTip("支持 doc/docx/pdf/rtf/odt/txt/md/html/pptx/xlsx/xls/csv 等")
         b_imp.clicked.connect(self.import_docs)
-        b_exp = QPushButton("另存为 Word")
+        b_exp = QPushButton("导出 Word")
         b_exp.setToolTip("按美学配色自动排版后导出 .docx")
         b_exp.clicked.connect(self.export_word)
-        b_add = QPushButton("＋ 新增")
+        b_add = QPushButton("＋ 新增行")
+        b_add.setToolTip("在选中单元格上方新增一行")
         b_add.clicked.connect(self.add_row)
+        b_add_col = QPushButton("＋ 新增列")
+        b_add_col.setToolTip("在选中单元格左侧新增一列")
+        b_add_col.clicked.connect(self.add_column)
         b_edit = QPushButton("编辑")
         b_edit.clicked.connect(self.edit_row)
         b_del = QPushButton("删除")
         b_del.setObjectName("Danger")
         b_del.clicked.connect(self.delete_rows)
+        for b in (b_imp, b_exp, b_add, b_add_col, b_edit, b_del):
+            bar1.addWidget(b)
+        bar1.addStretch()
+        v.addLayout(bar1)
+
+        bar2 = QHBoxLayout()
+        bar2.setSpacing(6)
         b_up = QPushButton("↑ 上移")
         b_up.clicked.connect(lambda: self.move_rows(-1))
         b_dn = QPushButton("↓ 下移")
         b_dn.clicked.connect(lambda: self.move_rows(1))
         b_sel = QPushButton("全选")
         b_sel.clicked.connect(self.select_all)
-        for b in (b_imp, b_exp, b_add, b_edit, b_del, b_up, b_dn, b_sel):
-            bar.addWidget(b)
+        for b in (b_up, b_dn, b_sel):
+            bar2.addWidget(b)
         self.chk_center = QCheckBox("居中显示")
         self.chk_center.toggled.connect(self.apply_center)
-        bar.addWidget(self.chk_center)
-        bar.addStretch()
+        bar2.addWidget(self.chk_center)
+        bar2.addStretch()
         if self.kind == "flow":
             b_pl = QPushButton("↻ 生成播放列表")
             b_pl.setToolTip("把流程里指定的音乐按顺序同步到音乐库「流程配乐」列表")
             b_pl.clicked.connect(self.build_playlist)
-            bar.addWidget(b_pl)
-        v.addLayout(bar)
+            bar2.addWidget(b_pl)
+        v.addLayout(bar2)
 
         self.table = FitTable(0, len(self.headers))
         self.table.on_resize = None
         self.table.setHorizontalHeaderLabels(self.headers)
+        self.table.setItemDelegate(PrepCellDelegate(self.keys, self.table))
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1043,24 +1100,32 @@ class ListPane(QWidget):
                                    QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.SelectedClicked)
         self.table.setWordWrap(True)
+        self.table.setFrameShape(QFrame.NoFrame)
+        self.table.setContentsMargins(0, 0, 0, 0)
+        self.table.viewport().setContentsMargins(0, 0, 0, 0)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._layout = self._load_layout()
         self._restoring = False
         hh = self.table.horizontalHeader()
+        hh.setDefaultAlignment(Qt.AlignCenter)
         hh.setStretchLastSection(False)
+        self._user_resized = False
+        self._restoring = True
         for i in range(len(self.headers)):
             hh.setSectionResizeMode(i, QHeaderView.Interactive)
             self.table.setColumnWidth(i, self.widths[i] or 120)
+        self._restoring = False
         vh = self.table.verticalHeader()
         vh.setVisible(False)
         vh.setSectionResizeMode(QHeaderView.Interactive)
-        vh.setDefaultSectionSize(38)
+        vh.setDefaultSectionSize(42)
         self._row_filter = RowResizeFilter(self.table)
         hh.sectionResized.connect(self._on_col_resized)
         self._widths_fitted = False
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
         _t = theme.THEMES[theme.current_theme()]
         self.table.setStyleSheet(
+            "QTableWidget{border:none;border-radius:0;}"
             "QTableWidget QLineEdit{background:%s;color:%s;border:2px solid %s;"
             "border-radius:6px;padding:4px 8px;min-height:22px;"
             "selection-background-color:%s;selection-color:#14161B;}"
@@ -1075,6 +1140,53 @@ class ListPane(QWidget):
         self.lb_tip.setObjectName("SubTitle")
         v.addWidget(self.lb_tip)
 
+    def _load_custom_columns(self):
+        self.base_headers = list(self.headers)
+        self.base_keys = list(self.keys)
+        self.base_widths = list(self.widths)
+        try:
+            cols = json.loads(self.db.get_setting("prep_custom_cols_" + self.kind, "") or "[]")
+        except Exception:
+            cols = []
+        self.custom_cols = [c for c in cols if isinstance(c, dict) and c.get("id")]
+        for c in self.custom_cols:
+            self.headers.append(c.get("name") or "自定义列")
+            self.keys.append(c["id"])
+            self.widths.append(c.get("w") or 120)
+        try:
+            self.custom_values = json.loads(self.db.get_setting("prep_custom_values_" + self.kind, "") or "{}")
+        except Exception:
+            self.custom_values = {}
+
+    def _save_custom_columns(self):
+        self.db.set_setting("prep_custom_cols_" + self.kind, json.dumps(self.custom_cols, ensure_ascii=False))
+        self.db.set_setting("prep_custom_values_" + self.kind, json.dumps(self.custom_values, ensure_ascii=False))
+
+    def add_column(self):
+        col = self.table.currentColumn()
+        if col < 0:
+            col = len(self.headers)
+        name, ok = QInputDialog.getText(self, "新增列", "列名：", text="自定义列")
+        if not ok or not name.strip():
+            return
+        cid = "custom_" + datetime.datetime.now().strftime("%H%M%S%f")
+        self.custom_cols.insert(min(col, len(self.custom_cols)), {"id": cid, "name": name.strip(), "w": 120})
+        # Rebuild headers/keys/widths from base + custom order.
+        self.headers[:] = list(self.base_headers)
+        self.keys[:] = list(self.base_keys)
+        self.widths[:] = list(self.base_widths)
+        for c in self.custom_cols:
+            self.headers.append(c.get("name") or "自定义列")
+            self.keys.append(c["id"])
+            self.widths.append(c.get("w") or 120)
+        self._save_custom_columns()
+        self.table.setColumnCount(len(self.headers))
+        self.table.setHorizontalHeaderLabels(self.headers)
+        for j in range(len(self.headers)):
+            self.table.setColumnWidth(j, self.widths[j] or 120)
+        self.refresh()
+        self._persist_layout()
+
     # ---------- 数据 ----------
     def fetch(self):
         if self.kind == "people":
@@ -1084,6 +1196,7 @@ class ListPane(QWidget):
         return self.db.prep_flow()
 
     def refresh(self):
+        self._layout = self._load_layout()
         self.rows = self.fetch()
         self._loading = True
         self.table.setRowCount(len(self.rows))
@@ -1101,12 +1214,16 @@ class ListPane(QWidget):
                     if val:
                         it.setForeground(QColor("#C9A86A"))
                 else:
-                    it = QTableWidgetItem(str(r.get(key) or ""))
+                    if str(key).startswith("custom_"):
+                        val = self.custom_values.get(f"{key}|{r.get('id')}", "")
+                    else:
+                        val = r.get(key)
+                    it = QTableWidgetItem(str(val or ""))
                     if key == "time":
                         it.setTextAlignment(Qt.AlignCenter)
                 it.setData(Qt.UserRole, r.get("id"))
                 self.table.setItem(i, j, it)
-            self.table.setRowHeight(i, 38)
+            self.table.setRowHeight(i, 42)
         self._loading = False
         saved = self._layout.get("widths") or []
         if len(saved) == len(self.headers):
@@ -1130,6 +1247,7 @@ class ListPane(QWidget):
             if h:
                 self.table.setRowHeight(i, max(30, int(h)))
         self._schedule_fit()
+        QTimer.singleShot(0, self._fit_widths)
         if hasattr(self, "chk_center") and self.chk_center.isChecked():
             self.apply_center(True)
         self.update_tip()
@@ -1146,9 +1264,10 @@ class ListPane(QWidget):
     def _persist_layout(self):
         try:
             widths = [self.table.columnWidth(i) for i in range(len(self.headers))]
+            payload = {"widths": widths, "heights": self._heights}
+            self._layout = payload
             self.db.set_setting("prep_layout_" + self.kind,
-                                json.dumps({"widths": widths, "heights": self._heights},
-                                           ensure_ascii=False))
+                                json.dumps(payload, ensure_ascii=False))
         except Exception:
             pass
 
@@ -1179,18 +1298,33 @@ class ListPane(QWidget):
     def _on_col_resized(self, idx, old, new):
         if self._restoring:
             return
+        self._user_resized = True
         try:
-            vw = self.table.viewport().width()
-            total = sum(self.table.columnWidth(i) for i in range(len(self.headers)))
-            if vw > 0 and total > vw:
-                others = total - self.table.columnWidth(idx)
-                maxw = max(50, vw - others)
-                if self.table.columnWidth(idx) > maxw:
-                    self._restoring = True
-                    self.table.setColumnWidth(idx, maxw)
-                    self._restoring = False
+            n = len(self.headers)
+            delta = int(new) - int(old)
+            if n <= 0 or delta == 0:
+                return
+            self._restoring = True
+            if idx < n - 1:
+                nxt = idx + 1
+                nxt_w = self.table.columnWidth(nxt)
+                if delta > 0:
+                    if nxt_w - delta < 50:
+                        delta = max(0, nxt_w - 50)
+                    if delta == 0:
+                        self.table.setColumnWidth(idx, old)
+                    else:
+                        self.table.setColumnWidth(idx, old + delta)
+                        self.table.setColumnWidth(nxt, max(50, nxt_w - delta))
+                else:
+                    self.table.setColumnWidth(nxt, nxt_w + (-delta))
+            else:
+                # 最右列右边缘固定，不能把表格推出框外。
+                self.table.setColumnWidth(idx, old)
         except Exception:
             pass
+        finally:
+            self._restoring = False
         self._persist_layout()
         self._schedule_fit()
 
@@ -1201,10 +1335,32 @@ class ListPane(QWidget):
                 if it is not None:
                     it.setTextAlignment(Qt.AlignCenter if on else (Qt.AlignLeft | Qt.AlignVCenter))
 
+    def _fit_widths(self):
+        try:
+            vw = self.table.viewport().width()
+            n = len(self.headers)
+            if vw <= 0 or n == 0:
+                return
+            total = sum(self.table.columnWidth(i) for i in range(n))
+            if total <= 0:
+                return
+            self._restoring = True
+            if total > vw:
+                for i in range(n):
+                    self.table.setColumnWidth(i, max(50, int(self.table.columnWidth(i) * vw / total)))
+            elif total < vw - 2:
+                last = n - 1
+                self.table.setColumnWidth(last, self.table.columnWidth(last) + vw - total - 2)
+            self._restoring = False
+        except Exception:
+            pass
+
     def _schedule_fill(self, *_):
         QTimer.singleShot(30, self._fill_columns)
 
     def _fill_columns(self):
+        if getattr(self, "_user_resized", False):
+            return
         try:
             vw = self.table.viewport().width()
             n = len(self.headers)
@@ -1233,8 +1389,8 @@ class ListPane(QWidget):
                 saved = self._heights.get(str(rid))
                 if saved:
                     self.table.setRowHeight(i, max(30, int(saved)))
-                elif self.table.rowHeight(i) < 38:
-                    self.table.setRowHeight(i, 38)
+                elif self.table.rowHeight(i) < 42:
+                    self.table.setRowHeight(i, 42)
         except Exception:
             pass
 
@@ -1299,7 +1455,12 @@ class ListPane(QWidget):
         if it is None:
             return
         it.setText(text)
-        self._update(self.rows[row]["id"], self.keys[col], text)
+        key = self.keys[col]
+        if str(key).startswith("custom_"):
+            self.custom_values[f"{key}|{self.rows[row]['id']}"] = text
+            self._save_custom_columns()
+            return
+        self._update(self.rows[row]["id"], key, text)
         self.rows[row][self.keys[col]] = text
 
     def on_changed(self, item):
@@ -1319,8 +1480,14 @@ class ListPane(QWidget):
                 val = ""
         else:
             val = item.text().strip()
+        if str(key).startswith("custom_"):
+            self.custom_values[f"{key}|{rid}"] = val
+            self._save_custom_columns()
+            self._schedule_fit()
+            return
         self._update(rid, key, val)
         rec[key] = val
+        self._schedule_fit()
 
     def _update(self, rid, key, val):
         if self.kind == "people":
